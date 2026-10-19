@@ -1,5 +1,11 @@
 # pi-web-surfer
-A Pi extension that lets an agent browse the web.
+A standalone Pi extension for web research.
+
+The current package is a loadable scaffold and registers no tools. The proposed
+`web_search` and artifact-backed, paged `web_fetch` contracts are in
+[design](docs/design.md); [setup](docs/setup.md) distinguishes current development
+commands from the candidate feature configuration. Implementation follows design
+review, not the presence of those documents.
 
 ## Quick start
 
