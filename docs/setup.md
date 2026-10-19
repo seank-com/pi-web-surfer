@@ -120,8 +120,11 @@ status, not hidden as extraction success.
 file outside configured datastore roots. It does not author a datastore note
 or trigger indexing. **Do not implement or operationalize that write until the
 design PR resolves the public destination-policy interface.** The existing
-datastore discovery interface does not expose root paths; reading its private
-config is not a supported substitute. Cache placement needs the same review.
+datastore discovery interface does not expose root paths, and redacted status
+paths cannot prove containment. The PR must choose an explicitly supported
+config-backed policy adapter or a datastore-owned policy interface; an ad hoc
+read of a presumed config is not an authoritative substitute. Cache placement
+needs the same review.
 
 Temporary artifacts are private files with one-hour retention in the candidate
 design, not a durable archive or a credential-safe place for arbitrary secrets.

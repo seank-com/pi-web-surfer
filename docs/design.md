@@ -22,7 +22,10 @@ and ordinary text retain their text representation. Binary responses remain
 local artifacts rather than being decoded into tool-result text.
 
 The initial product has no browser automation, login/cookie management, hosted
-extraction service, or secondary summarization-model call. Downloaded content
+extraction service, or secondary summarization-model call. Saved source references
+can feed a separately designed `bottled_query`/document-query workflow; that
+integration motivates the save feature but is not implemented by this package.
+Downloaded content
 is untrusted source material, not instructions or authoritative datastore notes.
 
 ## Package and host boundary
@@ -223,12 +226,22 @@ the downloaded evidence or masquerade as a successful save.
 **Integration decision required before implementation:** the datastore's current
 public v1 discovery reports readiness and store names, not authoritative root
 paths. Its status contract does not define a root-enumeration or destination-
-validation API. Web surfer must not parse that dependency's private config,
-inspect private service objects, or claim an incomplete manually copied root
-list proves disjointness. The design PR must establish a supported policy/API
-boundary for both cache placement and save publication. Until that is resolved,
-this required feature is not implementation-ready. Changing the datastore or
-its public API is separate scoped work, not authorized by this document.
+validation API. Model-facing status can display redacted paths such as
+`<external>/<basename>`; those are not canonical paths or a supported policy API.
+
+The datastore's operator config path and JSON format are documented. A
+config-backed policy adapter is therefore a possible design choice, not a claim
+that every config file is private. Before using it, explicitly establish its
+supported cross-extension contract: identify the effective project/config
+instance, when roots are resolved/refreshed, and how the publication check stays
+consistent with datastore ownership. Do not copy the dependency's private
+loader/containment algorithms or silently treat a guessed config instance as
+proof. The alternative is a datastore-owned root/policy-validation interface.
+
+The design PR must choose and authorize that boundary for both cache placement
+and save publication. Neither option is implemented or approved here. Until it
+is resolved, this required feature is not implementation-ready. Changing another
+component's contract or implementation requires separate scoped approval.
 
 ### Output
 
