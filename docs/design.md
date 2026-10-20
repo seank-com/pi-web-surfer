@@ -131,7 +131,8 @@ count limits require review, not adoption by convention.
 
 | Field | Meaning |
 |---|---|
-| `url` | Required absolute HTTP(S) URL |
+| `url` | Required absolute HTTP(S) URL, absent when `path` is given |
+| `path` | Optional local file path read instead of a URL |
 | `mode` | `readable` (default) or `raw` |
 | `offset` | Byte offset in the served UTF-8 text, default zero |
 | `chunkBytes` | Per-call response-page byte budget |
@@ -144,6 +145,18 @@ The fetch-to-artifact, page-without-re-download, and explicit save feature are
 core behavior. `artifactId` and `refresh`, their combination rules, and the
 publication details below are proposed refinements for correctness under
 concurrent calls and changing URLs.
+
+**Proposed local-path reads:** exactly one of `url` and `path` is required.
+A path read performs no network activity, applies no origin policy, and is
+bound only by the operating system: any file the process may read is a valid
+input. Local reads are a deliberate operator/agent choice, not a hidden
+egress, so no owner-only path discipline is imposed. The artifact is built
+from the file bytes with cache identity keyed by path and file size/modification
+time, so an unchanged file reuses its served representation and an edited file
+produces a fresh one. `readable` mode runs the same HTML extraction as a URL
+fetch, so a saved HTML page can be re-read as paged Markdown without
+re-downloading. A missing or unreadable path is an `artifact_error`, not a
+success with empty content.
 
 ### Network and body handling
 
@@ -221,8 +234,9 @@ must demonstrate the chosen supported concurrency behavior in disposable tests.
 
 `saveTo` is a real local write, not a read-only operation. The destination stays
 inside the project and outside configured datastore roots, not merely outside
-today's include globs. Cache/save operations do not index or promote web bodies
-into memory. Saving never modifies Pi sessions or transport journals.
+today's include globs. It also stays outside the project's protected
+configuration directory (`CONFIG_DIR_NAME`), which holds only durable state;
+`saveTo` failures must not require a configuration rollback. Cache/save operations do not index or promote web bodies into memory. Saving never modifies Pi sessions or transport journals.
 
 **Proposed publication:** create a new destination without overwriting an
 existing file; refuse symlink traversal and hard-link promotion; recheck the
@@ -271,8 +285,8 @@ supporting three placeholders:
   variable fails with a stable code. Only top-level templates resolve
   `{{env:}}`; it never resolves inside spliced file or template content, so
   untrusted text cannot reference credentials.
-- `{{file:path}}` reads a project-local file under the same owner-only path
-  discipline as `saveTo` and splices its text in.
+- `{{file:path}}` reads a file and splices its text in, bound only by the
+  operating system: any file the process may read may be spliced.
 - `{{template:path,{vars}}}` reads a template file, resolves `{{name}}`
   placeholders against the JSON variable map, and continues resolution in the
   result.
