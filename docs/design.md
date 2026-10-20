@@ -58,6 +58,7 @@ such as "Check whether the release notes describe a changed API."
 | Operation | Recipient | Material sent |
 |---|---|---|
 | Fetch | Requested origin and permitted redirect destinations | URL and ordinary HTTP request metadata |
+| POST/PUT body injection | Requested origin | Injected body: literal template text plus spliced file and template content |
 | Primary search | Google Gemini API with Google Search grounding | Query and search instruction, not the session transcript |
 | Keyless search | DuckDuckGo HTML endpoint | Query |
 | Source-link resolution, if enabled | Grounding-link service | The supplied source-link reference |
@@ -252,6 +253,41 @@ and artifact reference instead of inline body text. Status/paging warnings
 also appear in the model-facing text. An error result states whether a usable
 artifact remains; do not confuse a failed save with a failed network fetch.
 
+## web_fetch body and template injection
+
+**Proposed addition:** `web_fetch` accepts an optional `method` (`GET` by
+default, `POST`, `PUT`), a `headers` map, and a `body` string, extending the
+proposed input schema. Header values and the body are top-level templates
+supporting three placeholders:
+
+- `{{env:NAME}}` resolves from the process environment at call time; an unset
+  variable fails with a stable code. Only top-level templates resolve
+  `{{env:}}`; it never resolves inside spliced file or template content, so
+  untrusted text cannot reference credentials.
+- `{{file:path}}` reads a project-local file under the same owner-only path
+  discipline as `saveTo` and splices its text in.
+- `{{template:path,{vars}}}` reads a template file, resolves `{{name}}`
+  placeholders against the JSON variable map, and continues resolution in the
+  result.
+
+`{{file:}}` and `{{template:}}` may be spliced recursively, with a depth cap
+and cycle detection; exceeding the cap or cycling fails explicitly. A JSON map
+parse failure falls back to naive `key:value` parsing with a warning. Spliced
+content is inserted as-is, without escaping or encoding transformation. The
+literal body is a bounded payload; file and template reads follow the same
+honest size-cap and reporting discipline as downloads.
+
+POST and PUT to origins permitted by the fetch origin policy include the
+injected body in the material sent. Environment-injected values must never
+appear in errors, warnings, or request echoes. The mechanism supports calling
+local inference endpoints with path-referenced template files ("bottles"), so
+the model need not carry template text in context. Bottle prompts, endpoint
+conventions, and response interpretation belong to the calling skill; no prompt
+engine, endpoint registry, retry loop, or response shaping is added to this
+tool.
+
+**Proposed body/template codes:** `env_unavailable`, `template_error`.
+
 ## web_search
 
 `query` is required. **Proposed** `maxResults` ranges from 1 to 10, defaulting to
@@ -319,6 +355,7 @@ Proposed code vocabulary:
   `size_exceeded`, `artifact_error`, `artifact_unavailable`.
 - Save/search: `destination_blocked`, `save_failed`, `key_unavailable`,
   `search_failed`.
+- Body/template: `env_unavailable`, `template_error`.
 - Content warnings: `http_error`, `extraction_failed`, `source_unresolved`,
   `ungrounded_answer`.
 
