@@ -43,7 +43,9 @@ settings, credentials, or runtime lifecycle.
 
 ## Candidate behavior configuration
 
-**Not yet implemented; requires design review.** Proposed configuration lives at
+**Not yet implemented.** The design is resolved (see the design PR decision
+log); implementation awaits the D1 datastore root/policy-validation API. The
+configuration lives at
 `<project>/<CONFIG_DIR_NAME>/web-surfer/config.json`; `.pi` is the ordinary Pi
 config directory name. Use a mode-0700 directory and mode-0600 file. Behavior
 config contains no credentials.
@@ -67,9 +69,9 @@ config contains no credentials.
 }
 ```
 
-The design proposes missing config using defaults, while invalid config blocks
+Missing config uses defaults, while invalid config blocks
 network activity instead of reverting to permissive defaults. Unknown or
-duplicate keys are invalid, not ignored. Limits and remaining review decisions
+duplicate keys are invalid, not ignored. Limits and remaining open items
 are in the [design](design.md#configuration); do not add extra runtime constraints
 because a configuration value happens to appear in an example.
 
@@ -100,7 +102,7 @@ qualification after synthetic adapter tests exist.
 
 ## Candidate fetch, paging, and saved sources
 
-The following tool arguments illustrate the proposed interface, not a CLI or
+The following tool arguments illustrate the resolved design's interface, not a CLI or
 currently executable test:
 
 ```json
@@ -119,12 +121,12 @@ status, not hidden as extraction success.
 `saveTo` is intended to write stored source bytes to a new project-relative
 file outside configured datastore roots. It does not author a datastore note
 or trigger indexing. **Do not implement or operationalize that write until the
-design PR resolves the public destination-policy interface.** The existing
-datastore discovery interface does not expose root paths, and redacted status
-paths cannot prove containment. The PR must choose an explicitly supported
-config-backed policy adapter or a datastore-owned policy interface; an ad hoc
-read of a presumed config is not an authoritative substitute. Cache placement
-needs the same review.
+datastore root/policy-validation API exists.** The design decision is made: a
+root/policy-validation API owned by pi-markdown-datastore is the chosen
+boundary (design PR decision log, D1). The existing datastore discovery
+interface does not expose root paths, and redacted status paths cannot prove
+containment; an ad hoc read of a presumed config is not an authoritative
+substitute. Cache placement uses the same boundary.
 
 Temporary artifacts are private files with one-hour retention in the candidate
 design, not a durable archive or a credential-safe place for arbitrary secrets.

@@ -1,11 +1,14 @@
 # Web surfer design
 
-Status: review candidate, not implementation approval. The current package is a
-loadable scaffold and registers no tools. This document describes the intended
-two-tool product. Sections labeled **Proposed** require explicit resolution in
-the design PR before they become implementation requirements. That PR owns
-review decisions and investigation history; this document owns the resulting
-product contract.
+Status: design decisions D1–D14 are resolved with the owner on 2026-10-20 and
+recorded in the design PR description's decision log; this document is the
+resulting product contract, not implementation approval. The current package is
+a loadable scaffold and registers no tools. The one outstanding dependency is
+the D1 datastore root/policy-validation API, which must exist in
+pi-markdown-datastore before cache placement and save publication are
+implemented; the architectural choice for that boundary is made (see "saveTo
+and datastore ownership"). The design PR owns review decisions and
+investigation history; this document owns the resulting product contract.
 
 ## Purpose and scope
 
@@ -35,7 +38,7 @@ extension returned by `createWebSurferExtension()`. Pi is a host peer, not a
 bundled runtime. The existing development host is Pi 0.87.1; other host artifacts
 require explicit qualification with the source and packed-package tests.
 
-**Proposed integration:** register both tools during extension initialization;
+**Integration:** register both tools during extension initialization;
 load project configuration and initialize session resources at `session_start`.
 Do not start network requests when the extension is loaded or a session starts.
 Pass each tool's cancellation signal through all owned work. Close owned
@@ -61,7 +64,7 @@ such as "Check whether the release notes describe a changed API."
 | POST/PUT body injection | Requested origin | Injected body: literal template text plus spliced file and template content |
 | Primary search | Google Gemini API with Google Search grounding | Query and search instruction, not the session transcript |
 | Keyless search | DuckDuckGo HTML endpoint | Query |
-| Source-link resolution, if enabled | Grounding-link service | The supplied source-link reference |
+| Source-link resolution | Grounding-link service | The supplied source-link reference |
 | Extraction and artifact paging | Local process/filesystem | Stored response bytes; no hosted extraction |
 
 A tool's outbound requests are not model-provider payloads and do not pass
@@ -74,12 +77,13 @@ environment-file source, never a tool argument or behavior config. No credential
 discovery, creation, migration, or live provider call is part of installation.
 The implementation must not echo credentials or secret-bearing upstream URLs in
 errors. Errors report a sanitized host/status and stable reason, not raw SDK
-exception text. No cookies or arbitrary authorization-header tool arguments are
-part of this interface.
+exception text. No cookie tool arguments exist. Authorization headers are
+permitted only through the `headers` map with environment-injected values;
+literal credential values must not be passed as tool arguments.
 
 ## Configuration
 
-**Proposed configuration contract:** a project-local
+**Configuration contract:** a project-local
 `<project>/<CONFIG_DIR_NAME>/web-surfer/config.json`, with `CONFIG_DIR_NAME`
 supplied by Pi. Missing config uses the defaults below. Invalid config disables
 network operations and returns `config_invalid` until corrected; it never
@@ -115,19 +119,18 @@ request, and one-hour temporary-artifact retention. All fetch redirects share
 the attempt budget; a hop does not restart it. A timeout is an operation failure,
 not a latency acceptance test. Caller cancellation is distinct from timeout.
 
-**Proposed remaining validation:** use owner-only configuration (0700 directory,
-0600 file), reject unsafe file types, unknown/duplicate keys, and non-owned files.
-Numeric sizes/timeouts are positive safe integers; redirects are nonnegative
-safe integers. Proposed body/chunk ceilings are 64 MiB and 256,000 bytes.
-Proposed result count is 1-10, default 10. No additional numeric ranges, retry loops, cache quotas, or
-performance gates are implied by this document. These proposed ceilings and
-count limits require review, not adoption by convention.
+Validation: use owner-only configuration (0700 directory, 0600 file), reject
+unsafe file types, unknown/duplicate keys, and non-owned files. Numeric
+sizes/timeouts are positive safe integers; redirects are nonnegative safe
+integers. Body/chunk ceilings are 64 MiB and 256,000 bytes; result count is
+1-10, default 10 (ratified 2026-10-20, D9/D10). No additional numeric ranges,
+retry loops, cache quotas, or performance gates are implied by this document.
 
 ## web_fetch
 
 ### Input
 
-**Proposed schema:**
+**Input schema:**
 
 | Field | Meaning |
 |---|---|
@@ -143,20 +146,26 @@ count limits require review, not adoption by convention.
 
 The fetch-to-artifact, page-without-re-download, and explicit save feature are
 core behavior. `artifactId` and `refresh`, their combination rules, and the
-publication details below are proposed refinements for correctness under
-concurrent calls and changing URLs.
+publication details below are refinements for correctness under concurrent
+calls and changing URLs. When `artifactId` is supplied, `url` and `path` must
+be omitted; supplying either against an existing artifact fails with
+`artifact_error` naming the mismatch. `refresh` cannot be combined with an
+`artifactId` or a nonzero paging offset.
 
-**Proposed local-path reads:** exactly one of `url` and `path` is required.
-A path read performs no network activity, applies no origin policy, and is
-bound only by the operating system: any file the process may read is a valid
-input. Local reads are a deliberate operator/agent choice, not a hidden
-egress, so no owner-only path discipline is imposed. The artifact is built
-from the file bytes with cache identity keyed by path and file size/modification
-time, so an unchanged file reuses its served representation and an edited file
-produces a fresh one. `readable` mode runs the same HTML extraction as a URL
-fetch, so a saved HTML page can be re-read as paged Markdown without
-re-downloading. A missing or unreadable path is an `artifact_error`, not a
-success with empty content.
+**Local-path reads:** exactly one of `url` and `path` is required. A path read
+performs no network activity, applies no origin policy, and is bound only by
+the operating system: any file the process may read is a valid input. Local
+reads are a deliberate operator/agent choice, not a hidden egress, so no
+owner-only path discipline is imposed. The artifact is built from the file
+bytes with cache identity keyed by path, file size, and modification time: a
+change in size or modification time produces a fresh artifact, while a
+same-size replacement that preserves the modification time may reuse the prior
+representation; `refresh: true` forces a new read. Content type comes from the
+file extension: `.html`/`.htm` run the same HTML extraction as a URL fetch in
+`readable` mode (so a saved HTML page re-reads as paged Markdown), other
+extensions serve their text, and a missing or unrecognized extension serves raw
+text with no extraction. A missing or unreadable path is an `artifact_error`,
+not a success with empty content.
 
 ### Network and body handling
 
@@ -181,7 +190,14 @@ Non-2xx responses retain the body and return `http_error` as a warning with the
 actual status. Extraction failure returns an honest raw-text fallback with
 `extraction_failed`, not an empty successful article.
 
-**Proposed text contract:** UTF-8 text is served as text; invalid/unsupported
+**Injected-request redirects:** a same-origin redirect (same scheme and host)
+forwards the method, injected body, and headers unchanged. A cross-origin
+redirect re-issues the request as a GET with no body and does not forward any
+headers, so environment-injected credentials and spliced file content never
+follow a redirect to a different origin. Origin policy is checked at every hop
+as stated above; synthetic tests must cover both redirect shapes.
+
+**Text contract:** UTF-8 text is served as text; invalid/unsupported
 encodings and binary content use the artifact-summary path instead of lossy
 replacement characters. `raw` means no HTML extraction, not arbitrary binary
 bytes forced into a text block. Stored source bytes remain unchanged in either
@@ -190,8 +206,11 @@ fixtures; no particular parser library or reference implementation is mandated.
 
 ### Artifacts, paging, and concurrency
 
-**Proposed artifact contract:** artifacts live in the protected temporary
-namespace `$TMPDIR/web-surfer/<project-hash>/<url-hash>/`, with 0700
+**Artifact contract:** artifacts live in the protected temporary
+namespace `$TMPDIR/web-surfer/<project-hash>/<request-key>/`, where the
+request key encodes the full cache identity for that artifact (for a plain
+GET, the URL hash; for an injected request, URL plus method and digest; for a
+path read, path plus size and modification time), with 0700
 directories and 0600 files/metadata, outside datastore roots. The project
 hash is derived from the absolute working-directory path, so each project
 gets its own namespace; the namespace is per-project, and URL alone never
@@ -207,9 +226,18 @@ response even if another call refreshes the same URL. Continuation must not
 silently fetch different content after expiry. Return an explicit unavailable
 artifact result so the caller can intentionally start again.
 
+Automatic reuse applies only to plain GET requests — no body and no custom
+headers — whose identity is project plus URL. A request with a non-GET method,
+a body, or custom headers is never satisfied from a cached response: it always
+performs a new request, and its artifact is keyed by project, URL, method, and
+a digest of its sorted headers and body, so distinct requests remain distinct.
+Path reads reuse only under their own identity (path, size, modification
+time, as stated above). `artifactId` paging is independent of all reuse
+rules.
+
 `refresh: true` starts a new response and does not invalidate a response being
 paged. Reject refresh combined with an existing artifact or a nonzero paging
-offset. **Proposed non-2xx policy:** retain error bodies for paging, but do not
+offset. **Non-2xx policy:** retain error bodies for paging, but do not
 reuse them for a new URL-only read; the next such read rechecks the origin.
 Successful URL-only reads may reuse a fresh artifact. One-hour retention applies
 per artifact; lazy expiry and a session-start cleanup remove only this package's
@@ -221,11 +249,11 @@ start again deliberately.
 Prepare each served representation once per artifact/mode. Byte offsets refer
 to that representation, not necessarily the downloaded HTML bytes. Chunks end
 on UTF-8 character boundaries; return the authoritative `nextOffset` in text
-and metadata. Proposed EOF semantics: offset equal to the total length returns
+and metadata. EOF semantics: offset equal to the total length returns
 an empty successful page with no continuation; negative, past-EOF, or mid-codepoint
 offsets fail explicitly. No text is silently skipped between pages.
 
-The proposed default content-page budget is 51,200 bytes. Metadata/header bytes
+The default content-page budget is 51,200 bytes. Metadata/header bytes
 are additional and must be reported honestly; do not claim the whole tool result
 fits a content-only cap. Any independent line cap or search-output cap needs its
 own reviewed contract. In-process operations on the same cache/publication key
@@ -241,32 +269,28 @@ today's include globs. It also stays outside the project's protected
 configuration directory (`CONFIG_DIR_NAME`), which holds only durable state;
 `saveTo` failures must not require a configuration rollback. Cache/save operations do not index or promote web bodies into memory. Saving never modifies Pi sessions or transport journals.
 
-**Proposed publication:** create a new destination without overwriting an
+**Publication:** create a new destination without overwriting an
 existing file; refuse symlink traversal and hard-link promotion; recheck the
 approved destination boundary at publication. Copy source bytes to the new
 file and preserve the cached response so its paging reference remains usable.
 Return both artifact reference and saved path. A failed save must not destroy
 the downloaded evidence or masquerade as a successful save.
 
-**Integration decision required before implementation:** the datastore's current
-public v1 discovery reports readiness and store names, not authoritative root
-paths. Its status contract does not define a root-enumeration or destination-
-validation API. Model-facing status can display redacted paths such as
-`<external>/<basename>`; those are not canonical paths or a supported policy API.
-
-The datastore's operator config path and JSON format are documented. A
-config-backed policy adapter is therefore a possible design choice, not a claim
-that every config file is private. Before using it, explicitly establish its
-supported cross-extension contract: identify the effective project/config
-instance, when roots are resolved/refreshed, and how the publication check stays
-consistent with datastore ownership. Do not copy the dependency's private
-loader/containment algorithms or silently treat a guessed config instance as
-proof. The alternative is a datastore-owned root/policy-validation interface.
-
-The design PR must choose and authorize that boundary for both cache placement
-and save publication. Neither option is implemented or approved here. Until it
-is resolved, this required feature is not implementation-ready. Changing another
-component's contract or implementation requires separate scoped approval.
+**Outstanding dependency (D1, decided 2026-10-20):** the datastore-owned
+root/policy-validation API is the chosen boundary for both cache placement and
+save publication. The datastore's current public v1 discovery reports readiness
+and store names, not authoritative root paths; its status contract does not
+define a root-enumeration or destination-validation API, and model-facing
+status roots are redacted, not canonical paths or a supported policy API. That
+API — authoritative root enumeration plus destination validation owned by
+pi-markdown-datastore — must exist before this feature is implemented.
+web-surfer calls it at operation time and again at publication, and does not
+infer roots from configuration files, copy the datastore's private loader or
+containment algorithms, or treat a guessed config instance as proof.
+Implementing that API is a separate, scoped change in pi-markdown-datastore,
+tracked alongside pi-telegram-owner issue #5. Until it lands, cache placement
+and saveTo publication are not implementation-ready; the architectural choice
+itself is closed.
 
 ### Output
 
@@ -279,9 +303,9 @@ artifact remains; do not confuse a failed save with a failed network fetch.
 
 ## web_fetch body and template injection
 
-**Proposed addition:** `web_fetch` accepts an optional `method` (`GET` by
-default, `POST`, `PUT`), a `headers` map, and a `body` string, extending the
-proposed input schema. Header values and the body are top-level templates
+**Body and template injection:** `web_fetch` accepts an optional `method`
+(`GET` by default, `POST`, `PUT`), a `headers` map, and a `body` string,
+extending the input schema. Header values and the body are top-level templates
 supporting three placeholders:
 
 - `{{env:NAME}}` resolves from the process environment at call time; an unset
@@ -295,7 +319,7 @@ supporting three placeholders:
   result.
 
 `{{file:}}` and `{{template:}}` may be spliced recursively, with a depth cap
-and cycle detection; exceeding the cap or cycling fails explicitly. A JSON map
+of 3 and cycle detection; exceeding the cap or cycling fails explicitly. A JSON map
 parse failure falls back to naive `key:value` parsing with a warning. Spliced
 content is inserted as-is, without escaping or encoding transformation. The
 literal body is a bounded payload; file and template reads follow the same
@@ -310,11 +334,11 @@ conventions, and response interpretation belong to the calling skill; no prompt
 engine, endpoint registry, retry loop, or response shaping is added to this
 tool.
 
-**Proposed body/template codes:** `env_unavailable`, `template_error`.
+**Body/template codes:** `env_unavailable`, `template_error`.
 
 ## web_search
 
-`query` is required. **Proposed** `maxResults` ranges from 1 to 10, defaulting to
+`query` is required. `maxResults` ranges from 1 to 10, defaulting to
 configured `maxResults`. Search never receives the full conversation as hidden
 context. The keyed backend uses `gemini-2.5-flash` with `google_search` grounding;
 model availability and its response adapter require opt-in live qualification,
@@ -336,14 +360,14 @@ When no key is available, explain that the primary is unavailable; do not imply
 an API request failed when none was attempted. Both-backend failure reports
 sanitized per-backend causes.
 
-**Proposed honest result contract:** Gemini returns an answer plus zero or more
+**Honest result contract:** Gemini returns an answer plus zero or more
 attributed sources, bounded by `maxResults`; snippets are optional and never
 invented. A useful answer with no sources is labeled ungrounded, not presented
 as verified search evidence. Missing both usable answer and sources is a backend
 failure. DuckDuckGo returns ranked title/URL entries with snippets when present;
 it is not forced into a Gemini-generated answer shape.
 
-**Proposed source-link handling:** preserve provider attribution, order, and
+**Source-link handling:** preserve provider attribution, order, and
 content as returned by the service; do not deduplicate, re-order, or otherwise
 alter the result set. Resolve Google grounding
 wrappers only through the declared source-link service, sharing the search
@@ -354,25 +378,25 @@ and a visible warning; do not fabricate a resolved URL or drop it silently.
 Results disclose backend, fallback status, answer/source availability, result
 count, and warnings in text and `details`.
 
-**Proposed output bound:** cap the complete model-facing search text at 51,200
+**Output bound:** cap the complete model-facing search text at 51,200
 UTF-8 bytes, including attribution and warnings. Shorten answer/snippet text
 before source attribution, preserve valid UTF-8, and disclose omissions rather
 than claiming a complete answer. Reject an oversized upstream response rather
-than buffering it without limit; the proposed decoded-response cap is 1 MiB.
+than buffering it without limit; the decoded-response cap is 1 MiB.
 These independent limits require explicit PR resolution before implementing the
 provider adapter; a source-count limit alone does not bound an arbitrarily long
 generated answer.
 
 ## Failures and cancellation
 
-**Proposed result convention:** expected failures return one model-readable
+**Result convention:** expected failures return one model-readable
 text block and `details.ok: false` with a stable code. Warnings accompany usable
 content with `details.ok: true`. This explicit convention does not assert that
 returning an object makes Pi mark it as an execution error; the supported host
 API distinguishes returned results from thrown execution failures. Unexpected
 programming failures remain execution failures, not successful empty results.
 
-Proposed code vocabulary:
+Code vocabulary:
 
 - Input/policy: `malformed_url`, `unsupported_scheme`, `config_invalid`,
   `blocked_origin`, `refused_redirect`, `redirect_limit`, `invalid_offset`.
@@ -405,7 +429,15 @@ Future acceptance tests must demonstrate:
   duplicate Pi runtime or implicit companion dependency.
 - Missing/invalid configuration, explicit backend pins, and no network at load.
 - HTTP status/body fidelity, redirects, scheme/origin enforcement, deny policy
-  for hostnames and literal IP hosts through the shared lookup, compressed-body caps, and parent cancellation.
+  for hostnames and literal IP hosts through the shared lookup, compressed-body
+  caps, and parent cancellation.
+- Reuse eligibility: a cached plain GET never satisfies a POST/PUT or a
+  request carrying a body or headers; distinct bodies at the same URL remain
+  distinct artifacts. Same-origin versus cross-origin redirect forwarding of
+  method, body, and headers, with no credential or file-content forwarding
+  across origins. Local-path reads: size or modification-time changes produce
+  fresh artifacts, same-size preserved-mtime reuse is possible, and
+  `refresh: true` forces a new read.
 - Stable UTF-8 paging with refresh races, expiry, concurrent callers, unchanged
   source bytes, and explicit artifact/save failure outcomes.
 - Destination/cache policy through the chosen supported integration, including
