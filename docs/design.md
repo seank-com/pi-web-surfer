@@ -162,10 +162,13 @@ success with empty content.
 
 Validate the URL scheme and the project's origin policy before a request, on
 every redirect, and before serving a cached response under changed policy.
-Under `privateNetworks: "deny"`, checking DNS once and then independently
-resolving again for the connection is insufficient: the actual connected
-address must satisfy the policy. The HTTP transport must demonstrate that it
-can enforce this through a supported API; do not patch its private internals.
+Under `privateNetworks: "deny"`, the policy check is performed within the
+name-resolution step used by the connection: one authoritative lookup supplies
+the address that is connected to, so the checked address and the connected
+address cannot diverge. Literal IP hosts are subject to the same check.
+Traffic that bypasses the process's egress, or kernel-level re-resolution
+after the socket is connected, is outside this tool's scope; operators who
+need network-level enforcement apply it at the gateway.
 
 Reject a declared `Content-Length` above the download cap before reading the
 body. Independently enforce the cap while consuming the decoded response
@@ -401,8 +404,8 @@ Future acceptance tests must demonstrate:
 - Source and packed extension loading on each claimed host version, with no
   duplicate Pi runtime or implicit companion dependency.
 - Missing/invalid configuration, explicit backend pins, and no network at load.
-- HTTP status/body fidelity, redirects, scheme/origin enforcement, real address
-  policy under deny, compressed-body caps, and parent cancellation.
+- HTTP status/body fidelity, redirects, scheme/origin enforcement, deny policy
+  for hostnames and literal IP hosts through the shared lookup, compressed-body caps, and parent cancellation.
 - Stable UTF-8 paging with refresh races, expiry, concurrent callers, unchanged
   source bytes, and explicit artifact/save failure outcomes.
 - Destination/cache policy through the chosen supported integration, including
