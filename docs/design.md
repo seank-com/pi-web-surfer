@@ -340,8 +340,9 @@ as verified search evidence. Missing both usable answer and sources is a backend
 failure. DuckDuckGo returns ranked title/URL entries with snippets when present;
 it is not forced into a Gemini-generated answer shape.
 
-**Proposed source-link handling:** preserve provider attribution; deduplicate
-sources without inventing links or citation order. Resolve Google grounding
+**Proposed source-link handling:** preserve provider attribution, order, and
+content as returned by the service; do not deduplicate, re-order, or otherwise
+alter the result set. Resolve Google grounding
 wrappers only through the declared source-link service, sharing the search
 operation's budget rather than adding per-link deadlines. Do not fetch every
 source page automatically. An unresolved source retains its provider reference
