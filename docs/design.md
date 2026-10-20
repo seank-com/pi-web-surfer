@@ -174,12 +174,16 @@ fixtures; no particular parser library or reference implementation is mandated.
 
 ### Artifacts, paging, and concurrency
 
-**Proposed artifact contract:** use a protected per-project temporary namespace,
-with 0700 directories and 0600 files/metadata, outside datastore roots. Cache
-identity includes project identity and URL; it is not one global URL-only file.
-Publish completed responses atomically and never expose partial downloads as
-ready artifacts. Artifacts are external source evidence, not session journals
-or indexable notes.
+**Proposed artifact contract:** artifacts live in the protected temporary
+namespace `$TMPDIR/web-surfer/<project-hash>/<url-hash>/`, with 0700
+directories and 0600 files/metadata, outside datastore roots. The project
+hash is derived from the absolute working-directory path, so each project
+gets its own namespace; the namespace is per-project, and URL alone never
+identifies an artifact. Artifacts are intentionally ephemeral: they live in
+the system temp area, not the protected project configuration directory,
+which holds only durable state. Publish completed responses atomically and
+never expose partial downloads as ready artifacts. Artifacts are external
+source evidence, not session journals or indexable notes.
 
 An immutable response reference pins source bytes, retrieval metadata, and its
 served representation. A returned `artifactId` plus `nextOffset` pages that
@@ -193,7 +197,10 @@ offset. **Proposed non-2xx policy:** retain error bodies for paging, but do not
 reuse them for a new URL-only read; the next such read rechecks the origin.
 Successful URL-only reads may reuse a fresh artifact. One-hour retention applies
 per artifact; lazy expiry and a session-start cleanup remove only this package's
-expired artifacts. Retention is not an aggregate cache-size guarantee.
+expired artifacts. Retention is not an aggregate cache-size guarantee. Operating-
+system temp cleanup may remove artifacts before retention expires; that surfaces
+as an explicit unavailable-artifact result, not a silent failure, and callers
+start again deliberately.
 
 Prepare each served representation once per artifact/mode. Byte offsets refer
 to that representation, not necessarily the downloaded HTML bytes. Chunks end
