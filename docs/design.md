@@ -1,14 +1,16 @@
-# Web surfer design
+# Web surfer
 
-Status: design decisions D1–D14 are resolved with the owner on 2026-10-20 and
-recorded in the design PR description's decision log; this document is the
-resulting product contract, not implementation approval. The current package is
-a loadable scaffold and registers no tools. The one outstanding dependency is
-the D1 datastore root/policy-validation API, which must exist in
-pi-markdown-datastore before cache placement and save publication are
-implemented; the architectural choice for that boundary is made (see "saveTo
-and datastore ownership"). The design PR owns review decisions and
-investigation history; this document owns the resulting product contract.
+`web_fetch` and `web_search` for Pi. `web_fetch` downloads a URL (or reads a
+local file) into a protected temporary artifact and serves bounded pages without
+re-downloading; `web_search` searches the web via Google grounding with a
+keyless DuckDuckGo fallback. This document is the product contract the package
+implements.
+
+`saveTo`'s datastore-root boundary and cache placement depend on a
+root/policy-validation API owned by pi-markdown-datastore. Until that API is
+installed, when a datastore is configured but no responder answers, those checks
+fail closed rather than assuming containment (the current discovery interface
+cannot prove it). See "saveTo and datastore ownership.
 
 ## Purpose and scope
 
@@ -113,7 +115,7 @@ visible. Configuration is loaded as a complete document, not partially applied.
 without a usable key fails rather than overriding the operator's selection.
 `privateNetworks` is `allow` or `deny`.
 
-The reviewed transport defaults are a 1 MiB download cap, five redirects,
+The transport defaults are a 1 MiB download cap, five redirects,
 10-second connect timeout, 120-second total fetch attempt, 30-second search
 request, and one-hour temporary-artifact retention. All fetch redirects share
 the attempt budget; a hop does not restart it. A timeout is an operation failure,
@@ -123,7 +125,7 @@ Validation: use owner-only configuration (0700 directory, 0600 file), reject
 unsafe file types, unknown/duplicate keys, and non-owned files. Numeric
 sizes/timeouts are positive safe integers; redirects are nonnegative safe
 integers. Body/chunk ceilings are 64 MiB and 256,000 bytes; result count is
-1-10, default 10 (ratified 2026-10-20, D9/D10). No additional numeric ranges,
+1-10, default 10. No additional numeric ranges,
 retry loops, cache quotas, or performance gates are implied by this document.
 
 ## web_fetch
@@ -276,21 +278,17 @@ file and preserve the cached response so its paging reference remains usable.
 Return both artifact reference and saved path. A failed save must not destroy
 the downloaded evidence or masquerade as a successful save.
 
-**Outstanding dependency (D1, decided 2026-10-20):** the datastore-owned
-root/policy-validation API is the chosen boundary for both cache placement and
-save publication. The datastore's current public v1 discovery reports readiness
-and store names, not authoritative root paths; its status contract does not
-define a root-enumeration or destination-validation API, and model-facing
-status roots are redacted, not canonical paths or a supported policy API. That
-API — authoritative root enumeration plus destination validation owned by
-pi-markdown-datastore — must exist before this feature is implemented.
-web-surfer calls it at operation time and again at publication, and does not
-infer roots from configuration files, copy the datastore's private loader or
-containment algorithms, or treat a guessed config instance as proof.
-Implementing that API is a separate, scoped change in pi-markdown-datastore,
-tracked alongside pi-telegram-owner issue #5. Until it lands, cache placement
-and saveTo publication are not implementation-ready; the architectural choice
-itself is closed.
+**Datastore boundary:** the datastore-owned root/policy-validation API is the
+boundary for both cache placement and save publication. The datastore's public
+discovery reports readiness and store names, not authoritative root paths, and
+its model-facing status roots are redacted. web-surfer calls the API —
+authoritative root enumeration plus destination validation, owned by
+pi-markdown-datastore — at operation time and again at publication, and does
+not infer roots from configuration files, copy the datastore's private loader
+or containment algorithms, or treat a guessed config instance as proof. When a
+datastore is configured but no responder answers, the destination check fails
+closed instead of assuming containment. The API is a separate, scoped change in
+pi-markdown-datastore, tracked alongside pi-telegram-owner issue #5.
 
 ### Output
 
@@ -423,7 +421,7 @@ use public Pi exports and supported dependency APIs only. Source from external
 reference projects is not an implementation input: author the code from the
 reviewed contract and preserve any applicable attribution.
 
-Future acceptance tests must demonstrate:
+The acceptance tests demonstrate:
 
 - Source and packed extension loading on each claimed host version, with no
   duplicate Pi runtime or implicit companion dependency.
@@ -449,5 +447,6 @@ Future acceptance tests must demonstrate:
 Use synthetic providers, local HTTP fixtures, and disposable protected projects
 by default. Live search/fetch qualification is opt-in and separately authorized.
 No historical monorepo pass/fail counts, skip counts, timing assertions, or
-performance gates become this package's baseline. Until implementation exists,
-the existing tests establish scaffold loading and packaging only.
+performance gates become this package's baseline. The tests establish
+source/packed loading and packaging plus the fetch/search stack against local
+HTTP fixtures.

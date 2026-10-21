@@ -2,11 +2,10 @@
 
 ## Current package
 
-The package is a private, unpublished development candidate. It loads through
-Pi's extension API but currently registers no web tools. The
-[design](design.md) is a review candidate, not a claim that fetch/search already
-work. Configuration and tool examples below describe that candidate only;
-creating the example file does not enable features in the scaffold.
+The package is a private, unpublished development candidate. It registers
+`web_fetch` and `web_search` through Pi's extension API. The
+[design](design.md) and the configuration and tool examples below describe the
+implemented behavior.
 
 Use Node 24.14.1 or later. In an unloaded development checkout:
 
@@ -20,10 +19,12 @@ npm run test:package
 git diff --check
 ```
 
-The existing tests exercise source/packed scaffold loading and repository
-content checks. They do not establish HTTP, search quality, credential discovery,
-artifact publication, or datastore policy behavior. The default development
-host is Pi 0.87.1. Select another artifact explicitly rather than changing a
+The tests exercise source/packed loading and repository content checks, and
+exercise the fetch/search stack against a local HTTP fixture server: deny
+policy for hostnames and literal IPs, redirect forwarding, body caps, paging,
+`saveTo`, cancellation, and the search fallback with the loud warning. They do
+not establish live search quality or live Gemini availability. The default
+development host is Pi 0.87.1. Select another artifact explicitly rather than changing a
 running agent's installation:
 
 ```bash
@@ -38,13 +39,12 @@ from a sibling checkout or discovered through another extension's internals.
 For an explicitly authorized manual load in a disposable Pi project, pass
 `-e /absolute/path/to/pi-web-surfer/dist/index.js` to that project's selected Pi
 executable. Do not also autoload a second copy through package settings. Loading
-or testing a candidate does not authorize changing a live agent's resources,
+or testing this build does not authorize changing a live agent's resources,
 settings, credentials, or runtime lifecycle.
 
-## Candidate behavior configuration
+## Behavior configuration
 
-**Not yet implemented.** The design is resolved (see the design PR decision
-log); implementation awaits the D1 datastore root/policy-validation API. The
+The configuration is implemented and loaded at session start. The
 configuration lives at
 `<project>/<CONFIG_DIR_NAME>/web-surfer/config.json`; `.pi` is the ordinary Pi
 config directory name. Use a mode-0700 directory and mode-0600 file. Behavior
@@ -80,7 +80,7 @@ those destinations must be refused; that policy must apply to actual connection
 addresses and redirects, not just URL spellings. Neither mode grants authority
 to access a service outside the operator's task scope.
 
-## Candidate search setup and egress
+## Search setup and egress
 
 The intended primary is Gemini with Google Search grounding. The operator
 supplies an existing `GEMINI_API_KEY` through the environment or the established
@@ -100,10 +100,9 @@ the user. Caller cancellation stops work without triggering fallback. Search
 quality and Gemini model availability require separately authorized opt-in live
 qualification after synthetic adapter tests exist.
 
-## Candidate fetch, paging, and saved sources
+## Fetch, paging, and saved sources
 
-The following tool arguments illustrate the resolved design's interface, not a CLI or
-currently executable test:
+The following tool arguments illustrate the interface:
 
 ```json
 {"url":"https://example.org/article","mode":"readable"}
@@ -118,18 +117,20 @@ responses still produce an artifact summary rather than corrupt text.
 response. HTTP 401/403/404 and other non-2xx bodies remain visible with their
 status, not hidden as extraction success.
 
-`saveTo` is intended to write stored source bytes to a new project-relative
-file outside configured datastore roots. It does not author a datastore note
-or trigger indexing. **Do not implement or operationalize that write until the
-datastore root/policy-validation API exists.** The design decision is made: a
-root/policy-validation API owned by pi-markdown-datastore is the chosen
-boundary (design PR decision log, D1). The existing datastore discovery
-interface does not expose root paths, and redacted status paths cannot prove
-containment; an ad hoc read of a presumed config is not an authoritative
-substitute. Cache placement uses the same boundary.
+`saveTo` writes the stored source bytes to a new project-relative file. It
+never overwrites an existing file, and it refuses the protected configuration
+directory, destinations outside the project, and configured datastore roots
+(the content is still served; the refusal is a `destination_blocked`
+warning). It does not author a datastore note or trigger indexing. The
+datastore-root boundary is proven through the datastore root/policy-validation
+API (D1) when a responder is available; when a datastore is configured but no
+responder answers, the destination check fails closed rather than assuming
+containment, because the existing datastore discovery interface does not
+expose root paths and redacted status paths cannot prove containment. Cache
+placement uses the same boundary.
 
-Temporary artifacts are private files with one-hour retention in the candidate
-design, not a durable archive or a credential-safe place for arbitrary secrets.
+Temporary artifacts are private files with one-hour retention, not a durable
+archive or a credential-safe place for arbitrary secrets.
 A saved source and a Pi-authored research note have different authority. Preserve
 source provenance and treat page instructions as untrusted content.
 
