@@ -15,13 +15,14 @@ import {
 	readLatest,
 	readRepresentation,
 	readSourceBytes,
+	requestDir,
 	storeRepresentation,
 	type ArtifactMeta,
 } from "./artifacts.ts";
 import { represent } from "./extract.ts";
 import { pathRequestIdentity, projectHash, urlRequestIdentity } from "./identity.ts";
-import { checkDestination, type DatastoreBoundary } from "./policy.ts";
-import { httpFetch, TransportError } from "./transport.ts";
+import { BoundaryError, checkDestination, validateBoundary, type DatastoreBoundary } from "./policy.ts";
+import { httpFetch, validateOrigin, TransportError } from "./transport.ts";
 import { resolveTopLevelTemplate, isTemplateError } from "./templates.ts";
 import type { FetchDetails, ToolOutput, Warning } from "./types.ts";
 
@@ -72,6 +73,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 	const configDirName = env.configDirName ?? ".pi";
 	const configDir = path.join(env.cwd, configDirName);
 	const mode = req.mode ?? "readable";
+	if(req.refresh&&req.offset)return fail('invalid_input','refresh cannot be combined with a nonzero offset');
 
 	// ---- input validation (config-invalid only blocks network ops) ----
 	if (req.artifactId) {
@@ -121,7 +123,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 		}
 		try {
 			if (req.body !== undefined) {
-				const resolved = resolveTopLevelTemplate(req.body, process.env);
+				const resolved = resolveTopLevelTemplate(req.body, process.env,{cwd:env.cwd,maxBytes:maxBodyBytes});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set`);
 				}
@@ -129,7 +131,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 				for (const w of resolved.warnings) warnings.push({ code: "template_error", message: w.message });
 			}
 			for (const [k, v] of Object.entries(req.headers ?? {})) {
-				const resolved = resolveTopLevelTemplate(v, process.env);
+				const resolved = resolveTopLevelTemplate(v, process.env,{cwd:env.cwd,maxBytes:maxBodyBytes});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set (header ${k})`);
 				}
@@ -154,8 +156,9 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 	const keyLockKey = `${projectHashValue}/${identity.key}`;
 	try {
 		return await env.lock.run(keyLockKey, env.signal, async () => {
-			// ---- reuse decision ----
-			if (!req.refresh) {
+			try{await validateBoundary(env.boundary,requestDir(projectHashValue,identity.key),env.signal);}catch{if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked','Cache placement cannot be verified outside datastore roots');}
+			// Storage identity is not permission to reuse an injected request.
+			if (!req.refresh && (hasPath || (method==='GET'&&req.body===undefined&&!Object.keys(req.headers??{}).length))) {
 				const latestId = await readLatest(projectHashValue, identity.key);
 				if (latestId) {
 					const meta = await readArtifactMeta(projectHashValue, identity.key, latestId);
@@ -165,7 +168,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 						((meta.sourceKind === "path") ||
 							// Automatic reuse applies only to plain GET responses (D14):
 							// error bodies are not reused for a new URL-only read (D4).
-							(meta.httpStatus === undefined || meta.httpStatus < 400));
+							(meta.httpStatus === undefined || (meta.httpStatus>=200&&meta.httpStatus<300))&&!meta.sizeCapped);
 					if (reusable) {
 						return serveFromArtifact(meta!, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir);
 					}
@@ -212,18 +215,13 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 						...(transport.sizeCapped ? { sizeCapped: true } : {}),
 					};
 					sourceBytes = transport.body;
-					if (transport.status >= 400) {
+					if (transport.status <200 || transport.status >= 300) {
 						warnings.push({ code: "http_error", message: `HTTP ${transport.status} from ${transport.finalUrl}; body retained` });
-					}
-					if (transport.sizeCapped) {
-						warnings.push({ code: "size_exceeded", message: `body was capped at ${maxBodyBytes} bytes during decode` });
 					}
 				} catch (err) {
 					if (err instanceof TransportError) {
-						const extra = err.extra
-							? ` (declared ${err.extra.declaredBytes ?? "?"} bytes, cap ${maxBodyBytes})`
-							: "";
-						return fail(err.code, `${err.message}${extra}`);
+						const extra=err.extra?` (${err.extra.declaredBytes!==undefined?'declared '+err.extra.declaredBytes:'read '+err.extra.bytesRead} bytes, cap ${maxBodyBytes})`:'';
+						return fail(err.code,`${err.message}${extra}`,err.extra?{bytesRead:err.extra.bytesRead,capBytes:maxBodyBytes}:{});
 					}
 					if (err instanceof CancelledError || isCancelledError(err) || env.signal?.aborted) {
 						return fail("cancelled", "fetch cancelled before completion; no artifact was published");
@@ -232,11 +230,13 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 				}
 			}
 
-			const published = await publishArtifact(projectHashValue, identity.key, meta, sourceBytes);
+			const published = await publishArtifact(projectHashValue, identity.key, meta, sourceBytes,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
+			env.signal?.throwIfAborted();
 			await markLatest(projectHashValue, identity.key, published.artifactId);
 			return serveFromArtifact(published, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir);
 		});
 	} catch (err) {
+		if(err instanceof BoundaryError)return fail('destination_blocked',err.message);
 		if (err instanceof CancelledError || isCancelledError(err) || env.signal?.aborted) {
 			return fail("cancelled", "operation cancelled; unfinished work was cleaned up");
 		}
@@ -317,7 +317,15 @@ async function serveFromArtifact(
 	saveTo: string | undefined,
 	configDir: string,
 ): Promise<FetchResult> {
+	if(meta.sizeCapped)return fail('artifact_unavailable','Artifact contains an incomplete prior response; start a fresh fetch');
+	env.signal?.throwIfAborted();
+	if(meta.sourceKind==='url'){
+		if(env.config.invalid)return configInvalid(env.config.invalid);
+		try{await validateOrigin(meta.sourceUrl!,env.config.config!.fetch.privateNetworks,env.lookupImpl);if(meta.finalUrl&&meta.finalUrl!==meta.sourceUrl)await validateOrigin(meta.finalUrl,env.config.config!.fetch.privateNetworks,env.lookupImpl);}catch(error){if(error instanceof TransportError)return fail(error.code,error.message);throw error;}
+	}
+	try{await validateBoundary(env.boundary,requestDir(projectHashValue,meta.requestKey),env.signal);}catch{if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked','Cache ownership policy unavailable or destination owned');}
 	const sourceBytes = await readSourceBytes(projectHashValue, meta.requestKey, meta.artifactId);
+	env.signal?.throwIfAborted();
 	if (sourceBytes === undefined) {
 		return fail("artifact_unavailable", `artifact ${meta.artifactId} no longer exists (expired or cleaned up); start again`);
 	}
@@ -344,9 +352,10 @@ async function serveFromArtifact(
 				binary = true;
 			}
 			if (rep !== undefined) {
-				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode, rep);
+				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode, rep,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
 			}
 		} catch (err) {
+			if(err instanceof BoundaryError||env.signal?.aborted)throw err;
 			// Extraction failure: honest raw-text fallback (D8).
 			extractionWarning = { code: "extraction_failed", message: `extraction failed (${errMessage(err)}); serving raw text` };
 			warnings.push(extractionWarning);
@@ -358,7 +367,7 @@ async function serveFromArtifact(
 				binary = true;
 			}
 			if (rep !== undefined && !binary) {
-				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, "raw", rep);
+				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, "raw", rep,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
 			}
 		}
 	} else {
@@ -411,7 +420,9 @@ async function serveFromArtifact(
 		return fail("invalid_offset", `offset ${offset} lands in the middle of a UTF-8 character`);
 	}
 	if (offset === totalBytes) {
-		// EOF: empty successful page, no continuation (D8).
+		const saved=saveTo?await performSaveTo(saveTo,meta,sourceBytes,env,configDir):undefined;
+		if(saved?.error)warnings.push({code:saved.code??'save_failed',message:saved.error});
+		// EOF remains a valid save operation on the pinned source artifact.
 		return finishPage({
 			details: {
 				ok: true,
@@ -426,6 +437,7 @@ async function serveFromArtifact(
 				mode,
 				totalTextBytes: totalBytes,
 				returnedBytes: 0,
+				...(saved?.savedPath?{savedPath:saved.savedPath}:{}),
 				offset,
 				endOfFile: true,
 				sizeBytes: meta.sizeBytes,
@@ -435,7 +447,7 @@ async function serveFromArtifact(
 			meta,
 			text: "",
 			endOfFile: true,
-			saveToResult: undefined,
+			saveToResult: saved,
 		});
 	}
 
@@ -444,8 +456,9 @@ async function serveFromArtifact(
 	// continuation byte, step back to the start of that codepoint (D8).
 	let end = pageEnd;
 	if (end < totalBytes && isContinuationByte(text!, end)) {
-		while (end > offset && isContinuationByte(text!, end - 1)) end--;
+		while (end > offset && isContinuationByte(text!, end)) end--;
 	}
+	if(end===offset)return fail('invalid_input','chunkBytes cannot contain the next complete UTF-8 character');
 	const page = text!.subarray(offset, end);
 	const nextOffset = offset + page.length;
 	const endOfFile = nextOffset >= totalBytes;
@@ -536,7 +549,7 @@ async function performSaveTo(
 	env: FetchEnvironment,
 	configDir: string,
 ): Promise<{ savedPath?: string; error?: string; code?: "destination_blocked" | "save_failed" }> {
-	return performSaveToImpl(relative, env.cwd, configDir, env.boundary, sourceBytes);
+	return performSaveToImpl(relative, env.cwd, configDir, env.boundary, sourceBytes,env.signal);
 }
 
 async function performSaveToImpl(
@@ -545,6 +558,7 @@ async function performSaveToImpl(
 	configDir: string,
 	boundary: DatastoreBoundary,
 	sourceBytes: Buffer,
+	signal?:AbortSignal,
 ): Promise<{ savedPath?: string; error?: string; code?: "destination_blocked" | "save_failed" }> {
 	if (!relative) return {};
 	if (path.isAbsolute(relative) || relative.startsWith("/")) {
@@ -564,12 +578,19 @@ async function performSaveToImpl(
 		return { error: precheck.reason ?? "destination blocked", code: "destination_blocked" };
 	}
 
-	// Create parent directories (inside the project), then write with O_EXCL.
+	const policy=async()=>{try{await validateBoundary(boundary,absolute,signal);return undefined;}catch{signal?.throwIfAborted();return {error:'Destination policy unavailable or datastore-owned',code:'destination_blocked' as const};}};
+	const before=await policy();if(before)return before;
+	let created=false;
+	// Revalidate after directory creation, immediately before exclusive publication.
 	try {
 		await mkdir(path.dirname(absolute), { recursive: true, mode: 0o700 });
+		const publication=await policy();if(publication)return publication;
+		signal?.throwIfAborted();
 		const handle = await open(absolute, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+		created=true;
 		try {
 			await handle.writeFile(sourceBytes);
+			signal?.throwIfAborted();
 		} finally {
 			await handle.close();
 		}
@@ -577,24 +598,11 @@ async function performSaveToImpl(
 		if ((err as NodeJS.ErrnoException).code === "EEXIST") {
 			return { error: "destination already exists; saveTo never overwrites", code: "destination_blocked" };
 		}
-		return { error: `save failed: ${errMessage(err)}`, code: "save_failed" };
+		if(created)await unlink(absolute).catch(()=>undefined);
+		signal?.throwIfAborted();
+		return { error: 'Save failed; cached artifact preserved', code: "save_failed" };
 	}
 
-	// Recheck the approved destination boundary at publication (D5).
-	const post = await lstatSafe(absolute);
-	const postcheck = checkDestination({
-		absolute,
-		projectRoot: cwd,
-		configDir,
-		boundary,
-		exists: true,
-		isSymlink: post?.isSymbolicLink() ?? false,
-	});
-	if (!postcheck.ok && postcheck.reason !== "destination already exists; saveTo never overwrites") {
-		// Roll back a destination that no longer satisfies the boundary.
-		await unlink(absolute).catch(() => undefined);
-		return { error: postcheck.reason ?? "destination failed post-publication check", code: "destination_blocked" };
-	}
 	return { savedPath: relative };
 }
 
@@ -610,14 +618,6 @@ function isSymlinkSync(p: string): boolean {
 	}
 }
 
-async function lstatSafe(p: string) {
-	try {
-		return await lstat(p);
-	} catch {
-		return undefined;
-	}
-}
-
 function positiveIntOr(value: unknown, fallback: number): number | undefined {
 	if (value === undefined) return fallback;
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
@@ -628,10 +628,10 @@ function errMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-function fail(code: FetchDetails["code"], message: string): FetchResult {
+function fail(code: FetchDetails["code"], message: string,extra:Pick<FetchDetails,'bytesRead'|'capBytes'>={}): FetchResult {
 	return {
 		content: [{ type: "text", text: `[web_fetch failed] ${code}: ${message}` }],
-		details: { ok: false, code, sourceUrl: "" },
+		details: { ok: false, code, sourceUrl: "",...extra },
 	};
 }
 
@@ -652,13 +652,14 @@ function executePaging(
 		return Promise.resolve(fail("invalid_offset", "offset must be a nonnegative safe integer byte offset"));
 	}
 	const cfg = env.config.config?.fetch ?? DEFAULT_CONFIG.fetch;
-	const chunkBytes = positiveIntOr(req.chunkBytes, cfg.chunkBytes) ?? cfg.chunkBytes;
+	const chunkBytes = positiveIntOr(req.chunkBytes, cfg.chunkBytes);
+	if(chunkBytes===undefined||chunkBytes>CHUNK_BYTES_CEILING)return Promise.resolve(fail('invalid_input','Invalid chunkBytes page budget'));
 	const warnings: Warning[] = [];
-	return (async () => {
+	return env.lock.run(`${projectHashValue}/${requestKey}`,env.signal,async () => {
 		const meta = await readArtifactMeta(projectHashValue, requestKey, artifactId);
 		if (!meta || isExpired(meta)) {
 			return fail("artifact_unavailable", `artifact ${artifactId} is not available (expired, cleaned up, or unknown); start again deliberately`);
 		}
 		return serveFromArtifact(meta, env, projectHashValue, mode, offset, chunkBytes, warnings, req.saveTo, path.join(env.cwd, env.configDirName ?? ".pi"));
-	})();
+	}).catch(error=>{if(error instanceof BoundaryError)return fail('destination_blocked',error.message);if(env.signal?.aborted||error instanceof CancelledError)return fail('cancelled','Operation cancelled');throw error;});
 }

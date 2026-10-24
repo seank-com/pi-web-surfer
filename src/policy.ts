@@ -1,106 +1,125 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-
-/**
- * Datastore root/policy boundary (D1, decided 2026-10-20).
- *
- * The architectural choice is closed: an authoritative root-enumeration and
- * destination-validation API owned by pi-markdown-datastore (issue #6).
- * Until that API exists, this module:
- *
- *   - asks for the capability over the established extension event bus
- *     (capability-request/reply pattern, v1);
- *   - if no responder is present but a datastore configuration exists for
- *     this project, reports the boundary as unavailable so save publication
- *     fails closed rather than guessing;
- *   - if no datastore is configured, reports an empty (authoritative) root
- *     set: there is nothing to stay outside of.
- *
- * web-surfer never infers roots from configuration files, copies the
- * datastore's private loader or containment algorithms, or treats a redacted
- * model-facing status path as a canonical root.
- */
-
-export interface DatastoreBoundary {
-	/** True when the root set is authoritative for this project. */
-	available: boolean;
-	/** Canonical, resolved store roots (empty when no datastore is configured). */
-	roots: string[];
-	/** Present when a datastore is configured but no API responder answered. */
-	reason?: string;
-}
-
+/** Narrow consumption of the documented datastore v1 capability/RPC contract. */
+export const CAPABILITY_REQUEST = "pi-markdown-datastore:v1:capability-request";
+export const CAPABILITY_REPLY = "pi-markdown-datastore:v1:capability-reply";
+export const POLICY_REQUEST = "pi-markdown-datastore:v1:request";
 export interface EventBusLike {
 	emit(type: string, data: unknown): void;
-	on(type: string, handler: (data: unknown) => void): () => void;
+	on(type: string, handler: (data: any) => void): () => void;
 }
-
-export const BOUNDARY_REQUEST = "pi-markdown-datastore:v1:boundary-request";
-export const BOUNDARY_REPLY = "pi-markdown-datastore:v1:boundary-reply";
-
-interface BoundaryReply {
-	version: number;
-	requestId: string;
+export interface DatastoreBoundary {
+	available: boolean;
 	roots: string[];
+	reason?: string;
+	validate?: (absolute: string, signal?: AbortSignal) => Promise<void>;
 }
-
-const BOUNDARY_TIMEOUT_MS = 500;
-
-/**
- * Discovers the datastore boundary for a project. Must be called after
- * session start (responder extensions are registered by then).
- */
-export async function discoverDatastoreBoundary(
+export function discoverDatastoreBoundary(
 	bus: EventBusLike | undefined,
-	cwd: string,
-	configDirName = ".pi",
-): Promise<DatastoreBoundary> {
-	const datastoreConfigured = existsSync(path.join(cwd, configDirName, "markdown-datastore", "config.json"));
-
-	if (bus) {
+	_cwd?: string,
+	_configDirName?: string,
+): DatastoreBoundary {
+	const capability = () => {
+		if (!bus) throw new Error("Datastore policy service unavailable");
 		const requestId = randomUUID();
-		const reply = await new Promise<BoundaryReply | undefined>((resolve) => {
-			const timer = setTimeout(() => {
-				unsub();
-				resolve(undefined);
-			}, BOUNDARY_TIMEOUT_MS);
-			const unsub = bus.on(BOUNDARY_REPLY, (data: unknown) => {
-				const d = data as BoundaryReply;
-				if (d && d.version === 1 && d.requestId === requestId && Array.isArray(d.roots)) {
-					clearTimeout(timer);
-					unsub();
-					resolve(d);
-				}
-			});
-			bus.emit(BOUNDARY_REQUEST, { version: 1, requestId });
+		const replies: any[] = [];
+		const off = bus.on(CAPABILITY_REPLY, (r) => {
+			if (r?.requestId === requestId) replies.push(r);
 		});
-		if (reply) {
-			return { available: true, roots: reply.roots.map((r) => path.resolve(r)) };
+		try {
+			bus.emit(CAPABILITY_REQUEST, { version: 1, requestId });
+		} finally {
+			off();
 		}
-	}
-
-	if (datastoreConfigured) {
-		return {
-			available: false,
-			roots: [],
-			reason: "datastore configured for this project but no root/policy API responder is available",
-		};
-	}
-	return { available: true, roots: [] };
+		const c = replies[0]?.capability;
+		if (
+			replies.length !== 1 ||
+			c?.version !== 1 ||
+			c.contractVersion !== 1 ||
+			!c.ready ||
+			c.policyVersion !== 1 ||
+			typeof c.instanceId !== "string"
+		)
+			throw new Error("Datastore policy service unavailable or incompatible");
+		return c;
+	};
+	const request = (instanceId: string, operation: string, input: unknown, signal?: AbortSignal): Promise<any> =>
+		new Promise((resolve, reject) => {
+			if (!bus) return reject(new Error("Datastore policy unavailable"));
+			let settled = false;
+			const finish = (error: unknown, result?: any) => {
+				if (settled) return;
+				settled = true;
+				signal?.removeEventListener("abort", abort);
+				if (error) reject(error);
+				else if (result?.contractVersion !== 1 || result.operation !== operation)
+					reject(new Error("Invalid datastore policy response"));
+				else resolve(result.data);
+			};
+			const abort = () => finish(new Error("Datastore policy request cancelled"));
+			if (signal?.aborted) return abort();
+			signal?.addEventListener("abort", abort, { once: true });
+			// The datastore's documented RPC default is 15 minutes; its service owns enforcement.
+			// This adapter installs no timer or HTTP/search timeout. Caller/session abort propagates.
+			try {
+				bus.emit(POLICY_REQUEST, {
+					contractVersion: 1,
+					requestId: randomUUID(),
+					instanceId,
+					request: { operation, input },
+					deadline: Date.now() + 900_000,
+					signal,
+					resolve: (result: any) => finish(undefined, result),
+					reject: (error: unknown) => finish(error),
+				});
+			} catch (error) {
+				finish(error);
+			}
+		});
+	return {
+		get available() {
+			try {
+				capability();
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		roots: [],
+		reason: "Datastore policy service unavailable or incompatible",
+		async validate(absolute, signal) {
+			const c = capability();
+			const roots = await request(c.instanceId, "roots", {}, signal);
+			if (!Array.isArray(roots?.roots)) throw new Error("Invalid datastore roots response");
+			const destination = await request(c.instanceId, "validateDestination", { path: absolute }, signal);
+			if (destination?.path !== absolute || typeof destination.owned !== "boolean")
+				throw new Error("Invalid datastore destination response");
+			if (destination.owned) throw new Error("Destination belongs to a datastore");
+		},
+	};
 }
-
+export class BoundaryError extends Error {}
+export async function validateBoundary(
+	boundary: DatastoreBoundary,
+	absolute: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	try {
+		signal?.throwIfAborted();
+		if (!boundary.available) throw new Error();
+		if (boundary.validate) await boundary.validate(absolute, signal);
+		else if (boundary.roots.some((root) => inside(absolute, root))) throw new Error();
+		signal?.throwIfAborted();
+	} catch {
+		signal?.throwIfAborted();
+		throw new BoundaryError("Datastore policy unavailable or destination owned");
+	}
+}
 export interface DestinationCheck {
 	ok: boolean;
 	code?: "destination_blocked" | "save_failed";
 	reason?: string;
 }
-
-/**
- * Validates a saveTo destination (D5, D3): inside the project, outside the
- * protected configuration directory, outside datastore roots, and not an
- * existing file. The check is re-run at publication.
- */
 export function checkDestination(opts: {
 	absolute: string;
 	projectRoot: string;
@@ -109,35 +128,18 @@ export function checkDestination(opts: {
 	exists: boolean;
 	isSymlink: boolean;
 }): DestinationCheck {
-	const { absolute, projectRoot, configDir, boundary } = opts;
-	if (opts.isSymlink) {
-		return { ok: false, code: "destination_blocked", reason: "destination must not be a symlink" };
-	}
-	if (opts.exists) {
-		return { ok: false, code: "destination_blocked", reason: "destination already exists; saveTo never overwrites" };
-	}
-	if (!isInside(absolute, projectRoot)) {
-		return { ok: false, code: "destination_blocked", reason: "destination is outside the project" };
-	}
-	if (isInside(absolute, configDir)) {
-		return { ok: false, code: "destination_blocked", reason: "destination is inside the protected configuration directory" };
-	}
-	if (!boundary.available) {
-		return {
-			ok: false,
-			code: "destination_blocked",
-			reason: `datastore boundary unavailable: ${boundary.reason}`,
-		};
-	}
-	for (const root of boundary.roots) {
-		if (isInside(absolute, root) || absolute === root) {
-			return { ok: false, code: "destination_blocked", reason: "destination is inside a datastore root" };
-		}
-	}
+	const denied = (reason: string): DestinationCheck => ({ ok: false, code: "destination_blocked", reason });
+	if (opts.isSymlink) return denied("destination must not be a symlink");
+	if (opts.exists) return denied("destination already exists; saveTo never overwrites");
+	if (!inside(opts.absolute, opts.projectRoot)) return denied("destination is outside the project");
+	if (inside(opts.absolute, opts.configDir))
+		return denied("destination is inside the protected configuration directory");
+	if (!opts.boundary.available) return denied("datastore boundary unavailable");
+	if (opts.boundary.roots.some((root) => inside(opts.absolute, root)))
+		return denied("destination is inside a datastore root");
 	return { ok: true };
 }
-
-function isInside(candidate: string, parent: string): boolean {
+function inside(candidate: string, parent: string): boolean {
 	const rel = path.relative(parent, candidate);
-	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+	return !rel || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }

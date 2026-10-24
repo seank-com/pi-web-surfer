@@ -232,7 +232,7 @@ function walkNode(node: AnyNode, out: string[], state: WalkState): void {
 		}
 		case "table": {
 			const text = textContentOf(el).trim();
-			if (text) out.push(text.slice(0, 2000));
+			if (text) out.push(text);
 			break;
 		}
 		default: {

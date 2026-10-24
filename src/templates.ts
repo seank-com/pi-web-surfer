@@ -48,8 +48,8 @@ export interface ResolveResult {
 }
 
 
-export function resolveTopLevelTemplate(template: string, env: NodeJS.ProcessEnv = process.env): ResolveResult {
-	return resolve(template, env, new Set(), 0, true);
+export function resolveTopLevelTemplate(template: string, env: NodeJS.ProcessEnv = process.env,options:{maxBytes?:number;cwd?:string}={}): ResolveResult {
+	return resolve(template, env, new Set(), 0, true,options.maxBytes??1048576,options.cwd??process.cwd());
 }
 
 function resolve(
@@ -58,7 +58,10 @@ function resolve(
 	visited: Set<string>,
 	depth: number,
 	topLevel: boolean,
+	maxBytes:number,
+	cwd:string,
 ): ResolveResult {
+	if(Buffer.byteLength(text)>maxBytes)throw new TemplateError('Template payload exceeds body cap');
 	const warnings: TemplateWarning[] = [];
 	let missingEnv: string | undefined;
 	let out = "";
@@ -98,7 +101,7 @@ function resolve(
 
 		if (spec.startsWith("file:")) {
 			const filePath = spec.slice(5).trim();
-			const fileContent = readFileForSplice(filePath);
+			const fileContent = readFileForSplice(filePath,maxBytes,cwd);
 			if (fileContent.error) {
 				throw new TemplateError(fileContent.error);
 			}
@@ -113,11 +116,11 @@ function resolve(
 				throw new TemplateError(`template recursion exceeds depth cap of ${TEMPLATE_DEPTH_CAP}`);
 			}
 			const { templatePath, vars } = parseTemplateSpec(templateSpec, warnings);
-			const canonical = canonicalPath(templatePath);
+			const canonical = canonicalPath(templatePath,cwd);
 			if (visited.has(canonical)) {
 				throw new TemplateError(`template cycle detected: ${templatePath}`);
 			}
-			const content = readFileForSplice(templatePath);
+			const content = readFileForSplice(templatePath,maxBytes,cwd);
 			if (content.error) {
 				throw new TemplateError(content.error);
 			}
@@ -125,7 +128,7 @@ function resolve(
 			nextVisited.add(canonical);
 			const substituted = substituteVars(content.text ?? "", vars, warnings);
 			// Continue resolution in the result (depth incremented).
-			const nested = resolve(substituted, env, nextVisited, depth + 1, false);
+			const nested = resolve(substituted, env, nextVisited, depth + 1, false,maxBytes,cwd);
 			warnings.push(...nested.warnings);
 			if (nested.missingEnv) missingEnv = missingEnv ?? nested.missingEnv;
 			out += nested.value;
@@ -136,6 +139,7 @@ function resolve(
 		out += text.slice(open, close + 2);
 	}
 	out += text.slice(i);
+	if(Buffer.byteLength(out)>maxBytes)throw new TemplateError('Expanded payload exceeds body cap');
 	return { value: out, warnings, missingEnv };
 }
 
@@ -157,29 +161,12 @@ function findPlaceholderEnd(text: string, start: number): number {
 		// The spec may contain a brace-balanced vars object, so the
 		// placeholder closes at the first `}}` pair whose preceding content
 		// is brace-balanced (string-aware prefix depth).
-		const pref = new Array<number>(text.length + 1);
-		pref[start] = 0;
-		let inStr = false;
-		let j = start;
-		while (j < text.length) {
-			pref[j + 1] = pref[j]!;
-			const ch = text[j]!;
-			if (inStr) {
-				if (ch === "\\") {
-					pref[j + 1] = pref[j]!; // escaped char: no depth change across it either
-					j++;
-				} else if (ch === '"') inStr = false;
-			} else if (ch === '"') {
-				inStr = true;
-			} else if (ch === "{") {
-				pref[j + 1]!++;
-			} else if (ch === "}") {
-				pref[j + 1]!--;
-			}
-			j++;
-		}
-		for (let i = start; i < text.length - 1; i++) {
-			if (text[i] === "}" && text[i + 1] === "}" && pref[i] === 0) return i;
+		let depth=0,inString=false;
+		for(let i=start;i<text.length;i++){
+			const ch=text[i];
+			if(inString){if(ch==='\\')i++;else if(ch==='"')inString=false;continue;}
+			if(ch==='}'&&text[i+1]==='}'&&depth===0)return i;
+			if(ch==='"')inString=true;else if(ch==='{')depth++;else if(ch==='}')depth--;
 		}
 		return -1;
 	}
@@ -197,7 +184,8 @@ function substituteVars(text: string, vars: Record<string, string>, warnings: Te
 }
 
 /** Reads a file for splicing. Returns either its text or an error message. */
-function readFileForSplice(filePath: string): { text?: string; error?: string } {
+function readFileForSplice(filePath: string,maxBytes:number,cwd:string): { text?: string; error?: string } {
+	filePath=path.resolve(cwd,filePath);
 	let st: import("node:fs").Stats;
 	try {
 		st = lstatSync(filePath);
@@ -205,6 +193,7 @@ function readFileForSplice(filePath: string): { text?: string; error?: string } 
 		return { error: `cannot read file: ${filePath}` };
 	}
 	if (!st.isFile()) return { error: `not a regular file: ${filePath}` };
+	if(st.size>maxBytes)return {error:'Spliced file exceeds body cap'};
 	try {
 		return { text: readFileSync(filePath, "utf8") };
 	} catch (err) {
@@ -213,8 +202,8 @@ function readFileForSplice(filePath: string): { text?: string; error?: string } 
 }
 
 /** Canonical form of a path for cycle detection: realpath when it exists. */
-function canonicalPath(p: string): string {
-	const resolved = path.resolve(p);
+function canonicalPath(p: string,cwd:string): string {
+	const resolved = path.resolve(cwd,p);
 	try {
 		return realpathSync(resolved);
 	} catch {
@@ -251,10 +240,10 @@ function parseTemplateSpec(
 		return { templatePath: spec.trim(), vars: {} };
 	}
 	const templatePath = spec.slice(0, split).replace(/,\s*$/, "").trim();
-	const raw = spec.slice(split + 1, spec.lastIndexOf("}"));
+	const raw = spec.slice(split);
 	let vars: Record<string, string> = {};
 	try {
-		const obj = JSON.parse(`{${raw}`);
+		const obj = JSON.parse(raw);
 		if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
 			throw new Error("not an object");
 		}
@@ -263,7 +252,7 @@ function parseTemplateSpec(
 		warnings.push({
 			message: `variable map is not valid JSON; falling back to naive key:value parsing`,
 		});
-		for (const pair of splitTopLevel(raw)) {
+		for (const pair of splitTopLevel(raw.slice(1,-1))) {
 			if (!pair.trim()) continue;
 			const idx = pair.indexOf(":");
 			if (idx === -1) {

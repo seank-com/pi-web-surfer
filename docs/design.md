@@ -6,11 +6,10 @@ re-downloading; `web_search` searches the web via Google grounding with a
 keyless DuckDuckGo fallback. This document is the product contract the package
 implements.
 
-`saveTo`'s datastore-root boundary and cache placement depend on a
-root/policy-validation API owned by pi-markdown-datastore. Until that API is
-installed, when a datastore is configured but no responder answers, those checks
-fail closed rather than assuming containment (the current discovery interface
-cannot prove it). See "saveTo and datastore ownership.
+Cache placement and `saveTo` use the active pi-markdown-datastore public v1
+ownership API. Missing, unready, incompatible or ambiguous policy discovery is
+not proof of an empty root set: publication fails closed. Search remains usable
+without that service. See [datastore ownership](#saveto-and-datastore-ownership).
 
 ## Purpose and scope
 
@@ -97,15 +96,12 @@ visible. Configuration is loaded as a complete document, not partially applied.
   "schemaVersion": 1,
   "search": {
     "backend": "auto",
-    "maxResults": 10,
-    "timeoutMs": 30000
+    "maxResults": 10
   },
   "fetch": {
     "maxBodyBytes": 1048576,
     "chunkBytes": 51200,
     "maxRedirects": 5,
-    "connectTimeoutMs": 10000,
-    "timeoutMs": 120000,
     "privateNetworks": "allow"
   }
 }
@@ -115,15 +111,16 @@ visible. Configuration is loaded as a complete document, not partially applied.
 without a usable key fails rather than overriding the operator's selection.
 `privateNetworks` is `allow` or `deny`.
 
-The transport defaults are a 1 MiB download cap, five redirects,
-10-second connect timeout, 120-second total fetch attempt, 30-second search
-request, and one-hour temporary-artifact retention. All fetch redirects share
-the attempt budget; a hop does not restart it. A timeout is an operation failure,
-not a latency acceptance test. Caller cancellation is distinct from timeout.
+Transport uses Node's native `fetch`. Defaults are a 1 MiB decoded download cap,
+five redirects and one-hour artifact retention. No custom connection, request,
+search or per-link timeout is added; underlying transport defaults are untouched.
+Caller and session cancellation propagate through owned work. In deny mode a
+small declared Undici dispatcher supplies the checked DNS lookup to its standard
+connector; socket and TLS implementation stay owned by the dependency.
 
 Validation: use owner-only configuration (0700 directory, 0600 file), reject
 unsafe file types, unknown/duplicate keys, and non-owned files. Numeric
-sizes/timeouts are positive safe integers; redirects are nonnegative safe
+sizes are positive safe integers; redirects are nonnegative safe
 integers. Body/chunk ceilings are 64 MiB and 256,000 bytes; result count is
 1-10, default 10. No additional numeric ranges,
 retry loops, cache quotas, or performance gates are implied by this document.
@@ -203,8 +200,8 @@ as stated above; synthetic tests must cover both redirect shapes.
 encodings and binary content use the artifact-summary path instead of lossy
 replacement characters. `raw` means no HTML extraction, not arbitrary binary
 bytes forced into a text block. Stored source bytes remain unchanged in either
-mode. Select and declare an HTML extraction dependency based on synthetic
-fixtures; no particular parser library or reference implementation is mandated.
+mode. Readable HTML uses the declared parse5 dependency with synthetic extraction
+fixtures; no hosted extraction service is used.
 
 ### Artifacts, paging, and concurrency
 
@@ -286,9 +283,13 @@ authoritative root enumeration plus destination validation, owned by
 pi-markdown-datastore — at operation time and again at publication, and does
 not infer roots from configuration files, copy the datastore's private loader
 or containment algorithms, or treat a guessed config instance as proof. When a
-datastore is configured but no responder answers, the destination check fails
-closed instead of assuming containment. The API is a separate, scoped change in
-pi-markdown-datastore, tracked alongside pi-telegram-owner issue #5.
+policy responder is absent or unready, cache and save publication fail closed.
+Discovery is synchronous and requires exactly one ready policy-v1 instance;
+requests bind to that instance. Each operation and publication rechecks public
+roots and destination ownership. The existing datastore RPC lifetime is used,
+without a consumer discovery timer. No configuration-file absence is treated as
+ownership evidence. Effective configuration changes at service/session replacement
+are observed by fresh discovery; this package adds no live configuration watcher.
 
 ### Output
 
@@ -342,16 +343,16 @@ context. The keyed backend uses `gemini-2.5-flash` with `google_search` groundin
 model availability and its response adapter require opt-in live qualification,
 not an assertion based solely on old research.
 
-`auto` uses Gemini when a key is available and DuckDuckGo HTML otherwise. A
-primary authentication, quota, network, timeout, or invalid-response failure may
-make one fallback attempt in auto mode. Cancellation never triggers fallback.
+`auto` uses Gemini when a key is available and DuckDuckGo HTML only when no key
+is supplied. Authentication, quota, network and invalid-response failures remain
+Gemini failures when a key is present. Cancellation never triggers fallback.
 Explicit backend selection never silently selects another backend. No additional
 retries, provider catalog, or fan-out are specified.
 
 Fallback results include this model-facing warning:
 
 ```text
-[WARNING: Results from fallback path, inform the user that primary path failed!]
+[WARNING: Gemini key is not configured; using DuckDuckGo.]
 ```
 
 When no key is available, explain that the primary is unavailable; do not imply
@@ -368,9 +369,9 @@ it is not forced into a Gemini-generated answer shape.
 **Source-link handling:** preserve provider attribution, order, and
 content as returned by the service; do not deduplicate, re-order, or otherwise
 alter the result set. Resolve Google grounding
-wrappers only through the declared source-link service, sharing the search
-operation's budget rather than adding per-link deadlines. Do not fetch every
-source page automatically. An unresolved source retains its provider reference
+wrappers by requesting the Google grounding reference with redirects disabled.
+A returned HTTP redirect supplies the source URL; the source page is not fetched.
+No per-link deadline or automatic source-page retrieval is added. An unresolved source retains its provider reference
 and a visible warning; do not fabricate a resolved URL or drop it silently.
 
 Results disclose backend, fallback status, answer/source availability, result
@@ -381,9 +382,8 @@ UTF-8 bytes, including attribution and warnings. Shorten answer/snippet text
 before source attribution, preserve valid UTF-8, and disclose omissions rather
 than claiming a complete answer. Reject an oversized upstream response rather
 than buffering it without limit; the decoded-response cap is 1 MiB.
-These independent limits require explicit PR resolution before implementing the
-provider adapter; a source-count limit alone does not bound an arbitrarily long
-generated answer.
+A source-count limit alone does not bound generated answer text; the complete
+model-facing text bound includes attribution, warnings and omission disclosures.
 
 ## Failures and cancellation
 
@@ -406,9 +406,8 @@ Code vocabulary:
 - Content warnings: `http_error`, `extraction_failed`, `source_unresolved`,
   `ungrounded_answer`.
 
-Codes, result fields, and the distinction between policy rejection and I/O
-failure require review; they are not an instruction to create a large error
-framework. Cancellation stops owned requests and publication, cleans unfinished
+Policy rejection and I/O failure remain distinct. Cancellation stops owned
+requests and publication, cleans unfinished
 artifacts, and leaves completed evidence intact. Shutdown must not leave work
 continuing invisibly or start a fallback after its parent has ended.
 

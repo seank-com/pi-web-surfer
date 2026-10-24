@@ -88,6 +88,8 @@ export interface SessionState {
 	boundary: DatastoreBoundary;
 	lock: KeyLock;
 	searcher: Searcher;
+	controller:AbortController;
+	configDirName:string;
 }
 
 export interface WebSurferHost {
@@ -106,17 +108,19 @@ export async function createSessionState(host: WebSurferHost): Promise<SessionSt
 		boundary,
 		lock: new KeyLock(),
 		searcher: new DefaultSearcher(new GeminiAdapter(), new DuckDuckGoAdapter()),
+		controller:new AbortController(),configDirName:host.configDirName??'.pi',
 	};
 }
 
-function envOf(ctx: ExtensionContext, state: SessionState): FetchEnvironment {
+function signalOf(ctx:ExtensionContext,state:SessionState,toolSignal?:AbortSignal):AbortSignal{return AbortSignal.any([state.controller.signal,...(ctx.signal?[ctx.signal]:[]),...(toolSignal?[toolSignal]:[])]);}
+function envOf(ctx: ExtensionContext, state: SessionState,toolSignal?:AbortSignal): FetchEnvironment {
 	return {
 		cwd: ctx.cwd,
-		configDirName: ".pi",
+		configDirName: state.configDirName,
 		config: state.config,
 		boundary: state.boundary,
 		lock: state.lock,
-		signal: ctx.signal,
+		signal: signalOf(ctx,state,toolSignal),
 	};
 }
 
@@ -162,7 +166,7 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 					refresh: params.refresh,
 					saveTo: params.saveTo,
 				},
-				envOf(ctx, state),
+				envOf(ctx, state,_signal),
 			);
 			return result;
 		},
@@ -173,11 +177,11 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 		label: "Web Search",
 		promptSnippet: "Search the web via Google grounding (primary) or DuckDuckGo (fallback).",
 		description: [
-			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_API_KEY). Keyless fallback: DuckDuckGo HTML, always disclosed with a loud warning.",
+			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_API_KEY). DuckDuckGo HTML is selected automatically only without a key; Gemini errors never trigger a backend switch.",
 			"",
 			"- `query` (required). `maxResults` 1-10 (default from project config, 10).",
 			"- Results preserve provider order and content; sources may be absent (ungrounded answers are labeled).",
-			"- Fallback results carry: [WARNING: Results from fallback path, inform the user that primary path failed!]",
+			"- Automatic selection uses DuckDuckGo only without a Gemini key: [WARNING: Gemini key is not configured; using DuckDuckGo.]",
 			"",
 			"Intent example: \"Check whether the release notes describe a changed API.\"",
 		].join("\n"),
@@ -212,7 +216,7 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 				...config.config!.search,
 				...(params.maxResults !== undefined ? { maxResults: params.maxResults } : {}),
 			};
-			const outcome = await state.searcher.search(params.query, effectiveConfig, ctx.signal);
+			const outcome = await state.searcher.search(params.query, effectiveConfig, signalOf(ctx,state,_signal));
 			return { content: [{ type: "text", text: outcome.text }], details: outcome.details };
 		},
 	});
@@ -229,14 +233,14 @@ export function registerWebSurferSession(
 			configDirName: piConfigDirName ?? ".pi",
 			events: pi.events as EventBusLike,
 		};
+		piState.current?.controller.abort();
+		piState.current=undefined;
 		const state = await createSessionState(host);
-		// Replace any prior session state idempotently.
-		if (piState.current === undefined || true) piState.current = state;
-		// Session-start cleanup: remove only this package's expired artifacts.
-		void cleanupExpired(projectHash(ctx.cwd)).catch(() => undefined);
+		await cleanupExpired(projectHash(ctx.cwd));
+		piState.current = state;
 	});
 	pi.on("session_shutdown", async () => {
-		// Idempotent: no long-lived resources to close; clear session state.
+		piState.current?.controller.abort();
 		piState.current = undefined;
 	});
 }

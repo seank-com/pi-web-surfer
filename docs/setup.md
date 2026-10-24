@@ -55,15 +55,12 @@ config contains no credentials.
   "schemaVersion": 1,
   "search": {
     "backend": "auto",
-    "maxResults": 10,
-    "timeoutMs": 30000
+    "maxResults": 10
   },
   "fetch": {
     "maxBodyBytes": 1048576,
     "chunkBytes": 51200,
     "maxRedirects": 5,
-    "connectTimeoutMs": 10000,
-    "timeoutMs": 120000,
     "privateNetworks": "allow"
   }
 }
@@ -71,14 +68,17 @@ config contains no credentials.
 
 Missing config uses defaults, while invalid config blocks
 network activity instead of reverting to permissive defaults. Unknown or
-duplicate keys are invalid, not ignored. Limits and remaining open items
+duplicate keys are invalid, not ignored. Limits
 are in the [design](design.md#configuration); do not add extra runtime constraints
 because a configuration value happens to appear in an example.
 
 `privateNetworks: "allow"` permits LAN and loopback targets. Use `"deny"` when
 those destinations must be refused; that policy must apply to actual connection
 addresses and redirects, not just URL spellings. Neither mode grants authority
-to access a service outside the operator's task scope.
+to access a service outside the operator's task scope. Native fetch handles HTTP;
+a minimal Undici lookup dispatcher enforces deny mode at connection time, and
+manual redirects enforce the same checks at each hop. No custom timeouts are
+configured; caller/session cancellation remains available.
 
 ## Search setup and egress
 
@@ -90,13 +90,14 @@ live credentials, create new ones, or enable a paid account.
 
 | Backend | Intended behavior |
 |---|---|
-| `auto` | Gemini when available; one loud DuckDuckGo fallback if unavailable/failed |
+| `auto` | Gemini when a key is supplied; DuckDuckGo only when no key is supplied |
 | `gemini` | Explicit primary; missing key or failed request is an error, not a silent switch |
 | `duckduckgo` | Explicit keyless HTML search |
 
 Search sends query text to the selected provider, not the agent transcript or
 fetched local files. Fallback discloses its backend and tells the model to inform
-the user. Caller cancellation stops work without triggering fallback. Search
+the user. A Gemini failure with a supplied key stays a Gemini failure, not a
+backend switch. Caller cancellation stops work without triggering fallback. Search
 quality and Gemini model availability require separately authorized opt-in live
 qualification after synthetic adapter tests exist.
 
@@ -122,17 +123,31 @@ never overwrites an existing file, and it refuses the protected configuration
 directory, destinations outside the project, and configured datastore roots
 (the content is still served; the refusal is a `destination_blocked`
 warning). It does not author a datastore note or trigger indexing. The
-datastore-root boundary is proven through the datastore root/policy-validation
-API (D1) when a responder is available; when a datastore is configured but no
-responder answers, the destination check fails closed rather than assuming
-containment, because the existing datastore discovery interface does not
-expose root paths and redacted status paths cannot prove containment. Cache
-placement uses the same boundary.
+datastore-root boundary is checked through the active datastore policy-v1 API.
+Cache placement requires the same service, even when its authoritative root set
+is empty. Missing/unready/incompatible responders block publication rather than
+inventing empty ownership. Load the datastore extension once with a valid protected
+configuration, then start/reload the disposable session. Both extension load
+orders are supported; no guessed config-file boundary or copied datastore
+containment code is used.
 
 Temporary artifacts are private files with one-hour retention, not a durable
 archive or a credential-safe place for arbitrary secrets.
 A saved source and a Pi-authored research note have different authority. Preserve
 source provenance and treat page instructions as untrusted content.
+
+## Packed policy composition
+
+Run the offline registered-tool/native SDK probe against an explicitly selected
+datastore tarball, in both load orders:
+
+```bash
+DATASTORE_TARBALL=/path/to/datastore.tgz npm run test:integration
+```
+
+The fixture uses protected disposable projects/profiles and synthetic model
+responses, verifies save refusal, and reloads the isolated service to check
+changed effective ownership. It does not use live configuration or providers.
 
 ## Development content checks
 

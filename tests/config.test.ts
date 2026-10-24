@@ -34,14 +34,14 @@ test("valid config overrides defaults", () => {
 	try {
 		writeConfigFixture(dir, {
 			schemaVersion: CONFIG_SCHEMA_VERSION,
-			search: { backend: "duckduckgo", maxResults: 5, timeoutMs: 15000 },
+			search: { backend: "duckduckgo", maxResults: 5 },
 			fetch: { privateNetworks: "deny", maxRedirects: 3 },
 		});
 		const result = loadConfig(dir);
 		assert.equal(result.invalid, undefined);
 		assert.equal(result.config!.search.backend, "duckduckgo");
 		assert.equal(result.config!.search.maxResults, 5);
-		assert.equal(result.config!.search.timeoutMs, 15000);
+		assert.equal('timeoutMs' in result.config!.search,false);
 		assert.equal(result.config!.fetch.privateNetworks, "deny");
 		assert.equal(result.config!.fetch.maxRedirects, 3);
 		// Unspecified values keep defaults.

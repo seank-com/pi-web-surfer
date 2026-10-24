@@ -69,6 +69,8 @@ export interface FetchDetails extends BaseDetails {
 	nextOffset?: number;
 	endOfFile?: boolean;
 	sizeBytes?: number;
+	bytesRead?:number;
+	capBytes?:number;
 	sizeActual?: number;
 	sizeCapped?: boolean;
 	savedPath?: string;

@@ -39,7 +39,15 @@ Fetch a URL or read a local file as stored, paged source evidence.
 - `query` (required). `maxResults` 1–10 (default from project config, 10).
 - Results preserve provider order and content; ungrounded answers are labeled.
 - Fallback results carry:
-  `[WARNING: Results from fallback path, inform the user that primary path failed!]`
+  `[WARNING: Gemini key is not configured; using DuckDuckGo.]`
+- With a supplied Gemini key, provider failures remain Gemini failures; no error-triggered fallback occurs.
+
+HTTP uses Node's native `fetch`, with a minimal declared Undici checked-lookup
+dispatcher in deny mode and manual redirect validation. No custom timeouts are
+added; caller and session cancellation remain supported.
+
+Cache/save publication requires the active datastore public policy-v1 service.
+Missing policy is not proof of empty ownership. Search remains independently usable.
 
 ## Artifacts
 

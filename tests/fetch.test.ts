@@ -7,7 +7,7 @@ import path from "node:path";
 import { DEFAULT_CONFIG, type WebSurferConfig } from "../src/config.ts";
 import { KeyLock } from "../src/artifacts.ts";
 import { executeFetch, type FetchEnvironment } from "../src/fetchcore.ts";
-import { BOUNDARY_REPLY, BOUNDARY_REQUEST, type EventBusLike } from "../src/policy.ts";
+import { CAPABILITY_REPLY, CAPABILITY_REQUEST, POLICY_REQUEST, type EventBusLike } from "../src/policy.ts";
 import {
 	DefaultSearcher,
 	DuckDuckGoAdapter,
@@ -413,7 +413,8 @@ test("saveTo refuses protected, foreign, and unresolvable destinations", async (
 		{ url, saveTo: "out/p2.html" },
 		makeEnv(dir, { boundary: { available: false, roots: [], reason: "no responder" } }),
 	);
-	blocked(noBoundary.details);
+	assert.equal(noBoundary.details.ok,false,'unverified cache ownership blocks publication too');
+	assert.equal(noBoundary.details.code,'destination_blocked');
 	assert.equal(existsSync(path.join(dir, "out", "p2.html")), false);
 });
 
@@ -537,15 +538,14 @@ test("session boundary discovery resolves roots, and fails closed when configure
 	let replyHandler: ((data: unknown) => void) | undefined;
 	const respondingBus: EventBusLike = {
 		emit(type, data) {
-			if (type === BOUNDARY_REQUEST) {
-				const req = data as { requestId: string };
-				setImmediate(() =>
-					replyHandler?.({ version: 1, requestId: req.requestId, roots: [store] }),
-				);
+			if (type === CAPABILITY_REQUEST) {
+				const req = data as {requestId:string};
+				replyHandler?.({version:1,requestId:req.requestId,capability:{version:1,contractVersion:1,ready:true,stores:['fixture'],policyVersion:1,instanceId:'fixture'}});
 			}
+			if(type===POLICY_REQUEST){const req=data as any;req.resolve({contractVersion:1,operation:req.request.operation,data:req.request.operation==='roots'?{roots:[{store:'fixture',path:store,device:1,inode:1}]}:{path:req.request.input.path,owned:false,stores:[]}});}
 		},
 		on(type, handler) {
-			if (type === BOUNDARY_REPLY) replyHandler = handler;
+			if (type === CAPABILITY_REPLY) replyHandler = handler;
 			return () => {
 				replyHandler = undefined;
 			};
@@ -553,7 +553,7 @@ test("session boundary discovery resolves roots, and fails closed when configure
 	};
 	const withResponder = await createSessionState({ cwd: dir, events: respondingBus });
 	assert.equal(withResponder.boundary.available, true);
-	assert.deepEqual(withResponder.boundary.roots, [path.resolve(store)]);
+	await withResponder.boundary.validate!(path.join(dir,'new.txt'));
 
 	// Datastore configured but nobody answers: fail closed.
 	mkdirSync(path.join(dir, ".pi", "markdown-datastore"), { recursive: true, mode: 0o700 });
@@ -566,10 +566,10 @@ test("session boundary discovery resolves roots, and fails closed when configure
 	const failClosed = await createSessionState({ cwd: dir, events: silentBus });
 	assert.equal(failClosed.boundary.available, false);
 
-	// No datastore at all: authoritatively empty.
+	// Missing responders cannot prove an authoritative empty ownership set.
 	const clean = projectDir();
 	t.after(() => clean.cleanup());
 	const noDatastore = await createSessionState({ cwd: clean.dir, events: silentBus });
-	assert.equal(noDatastore.boundary.available, true);
+	assert.equal(noDatastore.boundary.available, false);
 	assert.deepEqual(noDatastore.boundary.roots, []);
 });

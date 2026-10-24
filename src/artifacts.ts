@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import {realpathSync} from 'node:fs';
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,7 +43,7 @@ export interface ArtifactMeta {
 }
 
 export function namespaceRoot(): string {
-	return path.join(os.tmpdir(), "web-surfer");
+	return path.join(realpathSync(os.tmpdir()), "web-surfer");
 }
 
 export function requestDir(projectHash: string, requestKey: string): string {
@@ -65,8 +66,8 @@ async function protectedDir(dir: string): Promise<void> {
 	await chmod(dir, 0o700);
 }
 
-async function writeProtectedFile(file: string, data: Buffer | string): Promise<void> {
-	await writeFile(file, data, { mode: 0o600 });
+async function writeProtectedFile(file: string, data: Buffer | string,signal?:AbortSignal): Promise<void> {
+	await writeFile(file, data, { mode: 0o600,signal });
 }
 
 /**
@@ -79,11 +80,14 @@ export async function publishArtifact(
 	requestKey: string,
 	meta: Omit<ArtifactMeta, "artifactId" | "fetchedAt" | "expiresAt">,
 	sourceBytes: Buffer,
+	publication?:{signal?:AbortSignal;validate:(absolute:string)=>Promise<void>},
 ): Promise<ArtifactMeta> {
 	const artifactId = newArtifactId(requestKey);
 	const dir = artifactDir(projectHash, requestKey, artifactId);
 	const staging = `${dir}.staging-${process.pid}-${randomBytes(4).toString("hex")}`;
 
+	publication?.signal?.throwIfAborted();
+	await publication?.validate(dir);
 	await protectedDir(requestDir(projectHash, requestKey));
 	await protectedDir(staging);
 	try {
@@ -93,8 +97,11 @@ export async function publishArtifact(
 			fetchedAt: new Date().toISOString(),
 			expiresAt: new Date(Date.now() + RETENTION_MS).toISOString(),
 		};
-		await writeProtectedFile(path.join(staging, "meta.json"), JSON.stringify(fullMeta, null, 2));
-		await writeProtectedFile(path.join(staging, "data.bin"), sourceBytes);
+		await writeProtectedFile(path.join(staging, "meta.json"), JSON.stringify(fullMeta, null, 2),publication?.signal);
+		await writeProtectedFile(path.join(staging, "data.bin"), sourceBytes,publication?.signal);
+		publication?.signal?.throwIfAborted();
+		await publication?.validate(dir);
+		publication?.signal?.throwIfAborted();
 		await rename(staging, dir);
 		return fullMeta;
 	} catch (err) {
@@ -179,9 +186,12 @@ export async function storeRepresentation(
 	artifactId: string,
 	mode: "readable" | "raw",
 	text: Buffer,
+	publication?:{signal?:AbortSignal;validate:(absolute:string)=>Promise<void>},
 ): Promise<void> {
 	const dir = artifactDir(projectHash, requestKey, artifactId);
-	await writeProtectedFile(path.join(dir, mode === "readable" ? "rep-readable.bin" : "rep-raw.bin"), text);
+	const target=path.join(dir,mode==='readable'?'rep-readable.bin':'rep-raw.bin');
+	const staging=target+'.tmp-'+randomBytes(4).toString('hex');
+	try{publication?.signal?.throwIfAborted();await publication?.validate(target);await writeProtectedFile(staging,text,publication?.signal);publication?.signal?.throwIfAborted();await publication?.validate(target);publication?.signal?.throwIfAborted();await rename(staging,target);}finally{await rm(staging,{force:true});}
 }
 
 /**

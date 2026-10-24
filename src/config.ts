@@ -13,15 +13,12 @@ import path from "node:path";
 export interface SearchConfig {
 	backend: "auto" | "gemini" | "duckduckgo";
 	maxResults: number;
-	timeoutMs: number;
 }
 
 export interface FetchConfig {
 	maxBodyBytes: number;
 	chunkBytes: number;
 	maxRedirects: number;
-	connectTimeoutMs: number;
-	timeoutMs: number;
 	privateNetworks: "allow" | "deny";
 }
 
@@ -38,13 +35,11 @@ export const MAX_RESULTS_MIN = 1;
 export const MAX_RESULTS_MAX = 10;
 
 export const DEFAULT_CONFIG: WebSurferConfig = {
-	search: { backend: "auto", maxResults: 10, timeoutMs: 30_000 },
+	search: { backend: "auto", maxResults: 10 },
 	fetch: {
 		maxBodyBytes: 1_048_576,
 		chunkBytes: 51_200,
 		maxRedirects: 5,
-		connectTimeoutMs: 10_000,
-		timeoutMs: 120_000,
 		privateNetworks: "allow",
 	},
 };
@@ -111,11 +106,10 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 
 	// Reject duplicate keys by scanning the raw document (post-parse objects
 	// cannot reveal a key that appeared twice).
-	const duplicate = findDuplicateKeys(raw);
-	if (duplicate !== null) return { invalid: `duplicate key: ${duplicate}` };
-
 	let doc: unknown;
 	try {
+		const duplicate = findDuplicateKeys(raw);
+		if (duplicate !== null) return { invalid: `duplicate key: ${duplicate}` };
 		doc = JSON.parse(raw);
 	} catch (err) {
 		return { invalid: `config is not valid JSON: ${errMessage(err)}` };
@@ -147,7 +141,7 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 function validateSearch(input: unknown, out: SearchConfig): string | undefined {
 	if (typeof input !== "object" || input === null || Array.isArray(input)) return "search: must be an object";
 	const rec = input as Record<string, unknown>;
-	const unknown = Object.keys(rec).filter((k) => !["backend", "maxResults", "timeoutMs"].includes(k));
+	const unknown = Object.keys(rec).filter((k) => !["backend", "maxResults"].includes(k));
 	if (unknown.length > 0) return `search: unknown keys: ${unknown.join(", ")}`;
 	if (rec.backend !== undefined) {
 		if (rec.backend !== "auto" && rec.backend !== "gemini" && rec.backend !== "duckduckgo") {
@@ -161,17 +155,13 @@ function validateSearch(input: unknown, out: SearchConfig): string | undefined {
 		}
 		out.maxResults = rec.maxResults;
 	}
-	if (rec.timeoutMs !== undefined) {
-		if (!isPositiveSafeInteger(rec.timeoutMs)) return "search.timeoutMs: must be a positive integer";
-		out.timeoutMs = rec.timeoutMs;
-	}
 	return undefined;
 }
 
 function validateFetch(input: unknown, out: FetchConfig): string | undefined {
 	if (typeof input !== "object" || input === null || Array.isArray(input)) return "fetch: must be an object";
 	const rec = input as Record<string, unknown>;
-	const known = ["maxBodyBytes", "chunkBytes", "maxRedirects", "connectTimeoutMs", "timeoutMs", "privateNetworks"];
+	const known = ["maxBodyBytes", "chunkBytes", "maxRedirects", "privateNetworks"];
 	const unknown = Object.keys(rec).filter((k) => !known.includes(k));
 	if (unknown.length > 0) return `fetch: unknown keys: ${unknown.join(", ")}`;
 	if (rec.maxBodyBytes !== undefined) {
@@ -191,14 +181,6 @@ function validateFetch(input: unknown, out: FetchConfig): string | undefined {
 			return "fetch.maxRedirects: must be a nonnegative integer";
 		}
 		out.maxRedirects = rec.maxRedirects;
-	}
-	if (rec.connectTimeoutMs !== undefined) {
-		if (!isPositiveSafeInteger(rec.connectTimeoutMs)) return "fetch.connectTimeoutMs: must be a positive integer";
-		out.connectTimeoutMs = rec.connectTimeoutMs;
-	}
-	if (rec.timeoutMs !== undefined) {
-		if (!isPositiveSafeInteger(rec.timeoutMs)) return "fetch.timeoutMs: must be a positive integer";
-		out.timeoutMs = rec.timeoutMs;
 	}
 	if (rec.privateNetworks !== undefined) {
 		if (rec.privateNetworks !== "allow" && rec.privateNetworks !== "deny") {
