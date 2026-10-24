@@ -1,6 +1,11 @@
 # Web surfer development
 
-Use Node 24.14.1 or later, Bash and TypeScript. Run `npm ci`, `npm run check`,
+Use Node 24.14.1 or later, Bash and TypeScript. The narrow asynchronous local
+MarkItDown bridge and its fixtures use Python; this is not a broader tooling
+rewrite. Reproduce its dependencies from `python/requirements.lock` with required
+hashes (qualified Python 3.14.6), and set `WEB_SURFER_PYTHON` to that interpreter.
+Never add conversion/ZIP/internal-input limits, deadlines, timeouts or retries;
+keep existing external download limits and text pagination. Run `npm ci`, `npm run check`,
 `npm test`, `npm run build`, `npm pack --dry-run`, and `npm run test:package`.
 Tests use synthetic inputs, local fixtures and disposable directories; never
 browse live sites, use real browser profiles, or touch live agent state. Set
