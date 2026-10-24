@@ -56,7 +56,7 @@ const FetchSchema = Type.Object({
 		Type.Number({ description: "Per-call response page byte budget (max 256000)." }),
 	),
 	maxBodyBytes: Type.Optional(
-		Type.Number({ description: "Per-call download cap for a new fetch (max 64 MiB)." }),
+		Type.Number({ description: "Per-call external-response cap (max 64 MiB); does not limit request bodies or local files." }),
 	),
 	artifactId: Type.Optional(
 		Type.String({

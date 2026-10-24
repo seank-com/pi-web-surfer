@@ -98,7 +98,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 	}
 
 	const cfg: FetchConfig = env.config.config?.fetch ?? DEFAULT_CONFIG.fetch;
-	const maxBodyBytes = positiveIntOr(req.maxBodyBytes, cfg.maxBodyBytes);
+	const maxBodyBytes = hasUrl ? positiveIntOr(req.maxBodyBytes, cfg.maxBodyBytes) : cfg.maxBodyBytes;
 	if (maxBodyBytes === undefined || maxBodyBytes > BODY_BYTES_CEILING) {
 		return fail("invalid_input", `maxBodyBytes must be a positive integer at most ${BODY_BYTES_CEILING}`);
 	}
@@ -123,7 +123,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 		}
 		try {
 			if (req.body !== undefined) {
-				const resolved = resolveTopLevelTemplate(req.body, process.env,{cwd:env.cwd,maxBytes:maxBodyBytes});
+				const resolved = resolveTopLevelTemplate(req.body, process.env,{cwd:env.cwd});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set`);
 				}
@@ -131,7 +131,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 				for (const w of resolved.warnings) warnings.push({ code: "template_error", message: w.message });
 			}
 			for (const [k, v] of Object.entries(req.headers ?? {})) {
-				const resolved = resolveTopLevelTemplate(v, process.env,{cwd:env.cwd,maxBytes:maxBodyBytes});
+				const resolved = resolveTopLevelTemplate(v, process.env,{cwd:env.cwd});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set (header ${k})`);
 				}
@@ -179,7 +179,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 			let meta: Omit<ArtifactMeta, "artifactId" | "fetchedAt" | "expiresAt">;
 			let sourceBytes: Buffer;
 			if (hasPath) {
-				const read = await readLocalFile(req.filePath!, maxBodyBytes, env.cwd);
+				const read = await readLocalFile(req.filePath!, env.cwd, env.signal);
 				if ("error" in read) return read.error;
 				meta = {
 					requestKey: identity.key,
@@ -260,8 +260,8 @@ async function pathReadIdentity(p: string, cwd: string): Promise<{ key: string; 
 
 async function readLocalFile(
 	p: string,
-	maxBytes: number,
 	cwd: string,
+	signal?: AbortSignal,
 ): Promise<
 	| { bytes: Buffer; absolute: string; contentType?: string }
 	| { error: FetchResult }
@@ -272,24 +272,11 @@ async function readLocalFile(
 		if (info.isSymbolicLink() || !info.isFile()) {
 			return { error: fail("artifact_error", `path is not a regular file: ${p}`) };
 		}
-		if (info.size > maxBytes) {
-			return {
-				error: fail(
-					"size_exceeded",
-					`file size ${info.size} exceeds cap ${maxBytes}; repeat with a higher maxBodyBytes`,
-				),
-			};
-		}
+		signal?.throwIfAborted();
 		const handle = await open(absolute, "r");
 		try {
-			const buffer = Buffer.alloc(info.size);
-			let offset = 0;
-			while (offset < buffer.length) {
-				const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-				if (bytesRead === 0) break;
-				offset += bytesRead;
-			}
-			const bytes = buffer.subarray(0, offset);
+			const bytes = await handle.readFile({ signal });
+			signal?.throwIfAborted();
 			const ext = absolute.toLowerCase().split(".").pop();
 			const contentType =
 				ext === "html" || ext === "htm" ? "text/html" : ext === "xml" ? "application/xml" : ext === "json" ? "application/json" : ext === "txt" || ext === "md" ? "text/plain" : undefined;
@@ -298,6 +285,7 @@ async function readLocalFile(
 			await handle.close();
 		}
 	} catch (err) {
+		signal?.throwIfAborted();
 		return { error: fail("artifact_error", `cannot read path: ${p}`) };
 	}
 }

@@ -29,6 +29,42 @@ test("missing config uses defaults", () => {
 	}
 });
 
+test("missing file in an existing protected config directory uses defaults", () => {
+	const { dir, cleanup } = project();
+	try {
+		mkdirSync(path.join(dir, ".pi", "web-surfer"), { recursive: true, mode: 0o700 });
+		assert.deepEqual(loadConfig(dir).config, DEFAULT_CONFIG);
+	} finally {
+		cleanup();
+	}
+});
+
+test("an inaccessible config parent fails closed", { skip: process.getuid?.() === 0 }, () => {
+	const { dir, cleanup } = project();
+	const parent = path.join(dir, ".pi");
+	try {
+		writeConfigFixture(dir, { fetch: { privateNetworks: "deny" } });
+		chmodSync(parent, 0);
+		const result = loadConfig(dir);
+		assert.equal(result.config, undefined);
+		assert.match(result.invalid ?? "", /cannot be inspected/);
+	} finally {
+		chmodSync(parent, 0o700);
+		cleanup();
+	}
+});
+
+test("a non-directory config ancestor is invalid, not missing", () => {
+	const { dir, cleanup } = project();
+	try {
+		writeFileSync(path.join(dir, ".pi"), "not a directory");
+		assert.match(loadConfig(dir).invalid ?? "", /cannot be inspected/);
+		assert.equal(loadConfig(dir).config, undefined);
+	} finally {
+		cleanup();
+	}
+});
+
 test("valid config overrides defaults", () => {
 	const { dir, cleanup } = project();
 	try {

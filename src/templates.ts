@@ -48,8 +48,8 @@ export interface ResolveResult {
 }
 
 
-export function resolveTopLevelTemplate(template: string, env: NodeJS.ProcessEnv = process.env,options:{maxBytes?:number;cwd?:string}={}): ResolveResult {
-	return resolve(template, env, new Set(), 0, true,options.maxBytes??1048576,options.cwd??process.cwd());
+export function resolveTopLevelTemplate(template: string, env: NodeJS.ProcessEnv = process.env,options:{cwd?:string}={}): ResolveResult {
+	return resolve(template, env, new Set(), 0, true,options.cwd??process.cwd());
 }
 
 function resolve(
@@ -58,10 +58,8 @@ function resolve(
 	visited: Set<string>,
 	depth: number,
 	topLevel: boolean,
-	maxBytes:number,
 	cwd:string,
 ): ResolveResult {
-	if(Buffer.byteLength(text)>maxBytes)throw new TemplateError('Template payload exceeds body cap');
 	const warnings: TemplateWarning[] = [];
 	let missingEnv: string | undefined;
 	let out = "";
@@ -74,7 +72,7 @@ function resolve(
 		const close = findPlaceholderEnd(text, open + 2);
 		if (close === -1) {
 			// Unterminated placeholder: keep the rest verbatim and stop.
-			out += text.slice(i);
+			out += text.slice(open);
 			return { value: out, warnings, missingEnv };
 		}
 		const spec = text.slice(open + 2, close).trim();
@@ -101,7 +99,7 @@ function resolve(
 
 		if (spec.startsWith("file:")) {
 			const filePath = spec.slice(5).trim();
-			const fileContent = readFileForSplice(filePath,maxBytes,cwd);
+			const fileContent = readFileForSplice(filePath,cwd);
 			if (fileContent.error) {
 				throw new TemplateError(fileContent.error);
 			}
@@ -120,7 +118,7 @@ function resolve(
 			if (visited.has(canonical)) {
 				throw new TemplateError(`template cycle detected: ${templatePath}`);
 			}
-			const content = readFileForSplice(templatePath,maxBytes,cwd);
+			const content = readFileForSplice(templatePath,cwd);
 			if (content.error) {
 				throw new TemplateError(content.error);
 			}
@@ -128,7 +126,7 @@ function resolve(
 			nextVisited.add(canonical);
 			const substituted = substituteVars(content.text ?? "", vars, warnings);
 			// Continue resolution in the result (depth incremented).
-			const nested = resolve(substituted, env, nextVisited, depth + 1, false,maxBytes,cwd);
+			const nested = resolve(substituted, env, nextVisited, depth + 1, false,cwd);
 			warnings.push(...nested.warnings);
 			if (nested.missingEnv) missingEnv = missingEnv ?? nested.missingEnv;
 			out += nested.value;
@@ -139,7 +137,6 @@ function resolve(
 		out += text.slice(open, close + 2);
 	}
 	out += text.slice(i);
-	if(Buffer.byteLength(out)>maxBytes)throw new TemplateError('Expanded payload exceeds body cap');
 	return { value: out, warnings, missingEnv };
 }
 
@@ -184,7 +181,7 @@ function substituteVars(text: string, vars: Record<string, string>, warnings: Te
 }
 
 /** Reads a file for splicing. Returns either its text or an error message. */
-function readFileForSplice(filePath: string,maxBytes:number,cwd:string): { text?: string; error?: string } {
+function readFileForSplice(filePath: string,cwd:string): { text?: string; error?: string } {
 	filePath=path.resolve(cwd,filePath);
 	let st: import("node:fs").Stats;
 	try {
@@ -193,7 +190,6 @@ function readFileForSplice(filePath: string,maxBytes:number,cwd:string): { text?
 		return { error: `cannot read file: ${filePath}` };
 	}
 	if (!st.isFile()) return { error: `not a regular file: ${filePath}` };
-	if(st.size>maxBytes)return {error:'Spliced file exceeds body cap'};
 	try {
 		return { text: readFileSync(filePath, "utf8") };
 	} catch (err) {

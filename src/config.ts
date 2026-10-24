@@ -78,9 +78,11 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 	let dirStat: ReturnType<typeof lstatSync> | null = null;
 	try {
 		dirStat = lstatSync(dir);
-	} catch {
-		// No config directory: defaults.
-		return { config: structuredClone(DEFAULT_CONFIG) };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { config: structuredClone(DEFAULT_CONFIG) };
+		}
+		return { invalid: "config directory cannot be inspected" };
 	}
 	const dirProblem = assertOwnedAndMode(dirStat, "config directory", fsConstants.S_IRWXU);
 	if (dirProblem) return { invalid: dirProblem };
@@ -89,9 +91,11 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 	let fileStat: ReturnType<typeof lstatSync> | null = null;
 	try {
 		fileStat = lstatSync(file);
-	} catch {
-		// Directory exists but no config file: defaults.
-		return { config: structuredClone(DEFAULT_CONFIG) };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { config: structuredClone(DEFAULT_CONFIG) };
+		}
+		return { invalid: "config file cannot be inspected" };
 	}
 	const fileProblem = assertOwnedAndMode(fileStat, "config file", fsConstants.S_IRUSR | fsConstants.S_IWUSR);
 	if (fileProblem) return { invalid: fileProblem };

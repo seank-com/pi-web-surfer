@@ -66,8 +66,8 @@ config contains no credentials.
 }
 ```
 
-Missing config uses defaults, while invalid config blocks
-network activity instead of reverting to permissive defaults. Unknown or
+Confirmed missing config uses defaults, while invalid or inaccessible config
+blocks network activity instead of reverting to permissive defaults. Unknown or
 duplicate keys are invalid, not ignored. Limits
 are in the [design](design.md#configuration); do not add extra runtime constraints
 because a configuration value happens to appear in an example.
@@ -113,6 +113,11 @@ A response supplies an artifact reference and `nextOffset`. Subsequent reads
 must use those returned values to continue the same response; do not guess byte
 offsets or re-fetch every page. `raw` bypasses HTML extraction, but binary
 responses still produce an artifact summary rather than corrupt text.
+
+`maxBodyBytes` limits external response bodies only. Internally supplied POST/PUT
+bodies, header values, environment expansions, file splices, templates and local-file
+reads have no package-imposed size cap. Served text pages remain bounded by
+`chunkBytes`.
 
 `refresh` deliberately rechecks a URL instead of returning an older cached
 response. HTTP 401/403/404 and other non-2xx bodies remain visible with their

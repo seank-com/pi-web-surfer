@@ -247,8 +247,8 @@ export class CancelledError extends Error {
 /**
  * In-process per-key coordination: operations on the same request key are
  * serialized so publication and reuse decisions cannot race. Cancellation
- * ownership stays with each caller — an already-aborted caller fails
- * immediately instead of waiting on the lock.
+ * ownership stays with each caller: aborting a queued caller releases its
+ * wait, without cancelling the holder or letting later callers pass it.
  */
 export class KeyLock {
 	private tails = new Map<string, Promise<void>>();
@@ -260,16 +260,29 @@ export class KeyLock {
 		const gate = new Promise<void>((resolve) => (release = resolve));
 		const tail = prev.then(() => gate);
 		this.tails.set(key, tail);
-		await prev;
-		if (signal?.aborted) {
-			release();
-			throw new CancelledError();
-		}
+		// A cancelled waiter's gate may open early, but its tail must still
+		// follow the holder before this key can be removed or acquired again.
+		void tail.then(() => {
+			if (this.tails.get(key) === tail) this.tails.delete(key);
+		});
 		try {
+			if (!signal) await prev;
+			else await new Promise<void>((resolve, reject) => {
+				const abort = () => reject(new CancelledError());
+				signal.addEventListener("abort", abort, { once: true });
+				void prev.then(() => {
+					signal.removeEventListener("abort", abort);
+					resolve();
+				});
+				if (signal.aborted) {
+					signal.removeEventListener("abort", abort);
+					abort();
+				}
+			});
+			if (signal?.aborted) throw new CancelledError();
 			return await fn();
 		} finally {
 			release();
-			if (this.tails.get(key) === tail) this.tails.delete(key);
 		}
 	}
 }

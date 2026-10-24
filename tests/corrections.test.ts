@@ -45,7 +45,7 @@ async function fixture(t: test.TestContext) {
 			};
 			seen.push(observation);
 			res.writeHead(200, { "content-type": "text/plain" });
-			res.end(JSON.stringify(observation));
+			res.end(url.pathname === "/ack" ? "ok" : JSON.stringify(observation));
 		});
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -255,10 +255,54 @@ test("escaped JSON variables expand normally without naive-map warning", async (
 	assert.equal(result.value, 'Value: first\nsecond "quoted"');
 	assert.equal(result.warnings.length, 0);
 });
-test("spliced files and expanded payloads honor the existing body cap", async (t) => {
+test("internal bodies, splices and templates do not inherit the response cap", async (t) => {
 	const f = await fixture(t);
-	await writeFile(join(f.cwd, "large.txt"), "a".repeat(1048577));
-	assert.throws(() => resolveTopLevelTemplate("{{file:large.txt}}", {}, { cwd: f.cwd }), /cap/);
+	const large = "a".repeat(1048577);
+	await writeFile(join(f.cwd, "large.txt"), large);
+	await writeFile(join(f.cwd, "template.txt"), "{{value}}");
+	const bodies = [
+		large,
+		"{{file:large.txt}}",
+		"{{template:template.txt," + JSON.stringify({ value: large }) + "}}",
+	];
+	for (const body of bodies) {
+		const result = await executeFetch({ url: f.url + "/ack", method: "POST", body, maxBodyBytes: 64 }, f.env);
+		assert.equal(result.details.ok, true);
+		assert.equal(f.seen.at(-1).body, large);
+	}
+});
+test("environment expansion and headers are independent of the response cap", async (t) => {
+	const f = await fixture(t);
+	const name = "WEB_SURFER_INTERNAL_PAYLOAD_FIXTURE";
+	const old = process.env[name];
+	const value = "x".repeat(100);
+	process.env[name] = value;
+	t.after(() => { if (old === undefined) delete process.env[name]; else process.env[name] = old; });
+	const result = await executeFetch({
+		url: f.url + "/ack", method: "POST", body: `{{env:${name}}}{{`,
+		headers: { "x-fixture": `{{env:${name}}}` }, maxBodyBytes: 64,
+	}, f.env);
+	assert.equal(result.details.ok, true);
+	assert.equal(f.seen[0].body, value + "{{");
+	assert.equal(f.seen[0].header, value);
+});
+test("internal local-file reads are uncapped while pages remain bounded", async (t) => {
+	const f = await fixture(t);
+	const large = "a".repeat(1048577);
+	const file = join(f.cwd, "large.txt");
+	await writeFile(file, large);
+	const result = await executeFetch({ filePath: file, maxBodyBytes: 1, saveTo: "copy.txt" }, f.env);
+	assert.equal(result.details.ok, true);
+	assert.equal(result.details.sizeBytes, Buffer.byteLength(large));
+	assert.equal(result.details.returnedBytes, DEFAULT_CONFIG.fetch.chunkBytes);
+	assert.equal(await readFile(join(f.cwd, "copy.txt"), "utf8"), large);
+	assert.equal(f.count(), 0);
+});
+test("unterminated placeholders preserve literal prefixes exactly once", () => {
+	for (const text of ["{{unfinished", "prefix {{unfinished", "before {{unknown}} after {{unfinished"])
+		assert.equal(resolveTopLevelTemplate(text, {}).value, text);
+	assert.equal(resolveTopLevelTemplate("{{env:VALUE}} prefix {{unfinished", { VALUE: "expanded" }).value,
+		"expanded prefix {{unfinished");
 });
 test("tables retain content beyond the old 2000-character cut", () => {
 	assert.ok(htmlToMarkdown("<table><tr><td>" + "a".repeat(2100) + "TAIL</td></tr></table>").includes("TAIL"));

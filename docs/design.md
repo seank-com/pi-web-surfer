@@ -86,9 +86,9 @@ literal credential values must not be passed as tool arguments.
 
 **Configuration contract:** a project-local
 `<project>/<CONFIG_DIR_NAME>/web-surfer/config.json`, with `CONFIG_DIR_NAME`
-supplied by Pi. Missing config uses the defaults below. Invalid config disables
-network operations and returns `config_invalid` until corrected; it never
-silently enables permissive defaults. Tools remain registered so the failure is
+supplied by Pi. Missing config uses the defaults below. Invalid or inaccessible config disables
+network operations and returns `config_invalid` until corrected; only confirmed
+absence uses defaults. Inspection failures never enable permissive defaults. Tools remain registered so the failure is
 visible. Configuration is loaded as a complete document, not partially applied.
 
 ```json
@@ -121,7 +121,7 @@ connector; socket and TLS implementation stay owned by the dependency.
 Validation: use owner-only configuration (0700 directory, 0600 file), reject
 unsafe file types, unknown/duplicate keys, and non-owned files. Numeric
 sizes are positive safe integers; redirects are nonnegative safe
-integers. Body/chunk ceilings are 64 MiB and 256,000 bytes; result count is
+integers. External-response/page ceilings are 64 MiB and 256,000 bytes; result count is
 1-10, default 10. No additional numeric ranges,
 retry loops, cache quotas, or performance gates are implied by this document.
 
@@ -138,7 +138,7 @@ retry loops, cache quotas, or performance gates are implied by this document.
 | `mode` | `readable` (default) or `raw` |
 | `offset` | Byte offset in the served UTF-8 text, default zero |
 | `chunkBytes` | Per-call response-page byte budget |
-| `maxBodyBytes` | Per-call download cap for a new fetch |
+| `maxBodyBytes` | Per-call external-response cap; does not limit internal inputs |
 | `artifactId` | Optional returned reference pinning an existing response |
 | `refresh` | Explicit new fetch, default false |
 | `saveTo` | Optional project-relative destination for the stored source bytes |
@@ -152,8 +152,9 @@ be omitted; supplying either against an existing artifact fails with
 `artifactId` or a nonzero paging offset.
 
 **Local-path reads:** exactly one of `url` and `path` is required. A path read
-performs no network activity, applies no origin policy, and is bound only by
-the operating system: any file the process may read is a valid input. Local
+performs no network activity, applies no origin policy or response-size cap,
+and is bound only by the operating system: any file the process may read is a
+valid input. `maxBodyBytes` limits external responses, not local-file reads. Local
 reads are a deliberate operator/agent choice, not a hidden egress, so no
 owner-only path discipline is imposed. The artifact is built from the file
 bytes with cache identity keyed by path, file size, and modification time: a
@@ -256,7 +257,9 @@ The default content-page budget is 51,200 bytes. Metadata/header bytes
 are additional and must be reported honestly; do not claim the whole tool result
 fits a content-only cap. Any independent line cap or search-output cap needs its
 own reviewed contract. In-process operations on the same cache/publication key
-must coordinate, with cancellation ownership preserved; no global worker count,
+must coordinate, with cancellation ownership preserved. Cancelling a queued
+caller releases its wait without cancelling the holder or allowing successors
+to bypass that holder; no global worker count,
 waiter timeout, or cross-process locking protocol is prescribed. Implementation
 must demonstrate the chosen supported concurrency behavior in disposable tests.
 
@@ -321,8 +324,10 @@ supporting three placeholders:
 of 3 and cycle detection; exceeding the cap or cycling fails explicitly. A JSON map
 parse failure falls back to naive `key:value` parsing with a warning. Spliced
 content is inserted as-is, without escaping or encoding transformation. The
-literal body is a bounded payload; file and template reads follow the same
-honest size-cap and reporting discipline as downloads.
+literal body, environment expansion, header values, file splices and expanded
+templates have no package-imposed size cap. `maxBodyBytes` limits the external
+response, not internally supplied request material. The recursion-depth and
+cycle checks still apply.
 
 POST and PUT to origins permitted by the fetch origin policy include the
 injected body in the material sent. Environment-injected values must never
