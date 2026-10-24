@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
+import {conversionPython} from '../src/conversion.ts';
 const root = fileURLToPath(new URL("../", import.meta.url));
 test(
 	"packed web tools consume actual datastore policy through native SDK in both load orders",
@@ -55,5 +56,9 @@ test(
 		});
 		assert.match(output, /PASS native public policy web-first/);
 		assert.match(output, /PASS native public policy datastore-first/);
+		await writeFile(join(consumer,'native-conversion-probe.ts'),await readFile(new URL('./fixtures/native-conversion-probe.ts',import.meta.url),'utf8'));
+		await writeFile(join(consumer,'documents.py'),await readFile(new URL('./fixtures/documents.py',import.meta.url),'utf8'));
+		const converted=execFileSync(process.execPath,[join(consumer,'native-conversion-probe.ts')],{cwd:consumer,env:{...process.env,HOME:join(consumer,'home'),PI_CODING_AGENT_DIR:join(consumer,'conversion-profile'),PI_CODING_AGENT_PACKAGE:host,DATASTORE_PACKAGE:join(consumer,'node_modules/@seank/pi-markdown-datastore'),WEB_SURFER_ENTRY:pathToFileURL(join(consumer,'node_modules/@seank/pi-web-surfer/dist/index.js')).href,WEB_SURFER_PYTHON:conversionPython()},encoding:'utf8'});
+		assert.match(converted,/PASS: registered native web_fetch uses full converted PDF directly/);
 	},
 );

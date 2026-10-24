@@ -41,14 +41,17 @@ const FetchSchema = Type.Object({
 	body: Type.Optional(
 		Type.String({
 			description:
-				"Request body for POST/PUT. May use {{env:NAME}}, {{file:path}}, and {{template:path,{vars}}} placeholders.",
+				"Request body for POST/PUT. Supports {{env:NAME}}, {{file:path}}, {{template:path,{vars}}}, and {{artifact:ID}} or {{artifact:ID,json}}. Artifact text is spliced directly without loading it into model context.",
 		}),
 	),
 	mode: Type.Optional(
 		Type.Union([Type.Literal("readable"), Type.Literal("raw")], {
-			description: "readable (default): HTML extracted to Markdown. raw: no extraction.",
+			description: "readable (default): local MarkItDown for HTML/PDF/DOCX. raw: original bytes without conversion.",
 		}),
 	),
+	operation: Type.Optional(Type.Union([Type.Literal('convert'),Type.Literal('zip-list')],{description:'zip-list enumerates names and declared sizes without decompressing members. convert uses the local engine; memberIndex explicitly selects one ZIP entry.'})),
+	memberIndex: Type.Optional(Type.Integer({minimum:0,description:'Zero-based ZIP index from zip-list. Only this selected member is decompressed; duplicate names are unambiguous.'})),
+	view: Type.Optional(Type.Union([Type.Literal('page'),Type.Literal('artifact')],{description:'page returns bounded source text (default). artifact returns only identity/provenance, keeping converted text out of model context.'})),
 	offset: Type.Optional(
 		Type.Number({ description: "Byte offset in the served text for paging. Default 0." }),
 	),
@@ -133,7 +136,10 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 			"Fetch an HTTP(S) URL or read a local file, store the source bytes outside model context, and serve bounded pages without re-downloading.",
 			"",
 			"- `url` (absolute HTTP(S)) or `path` (local file; no network) — exactly one.",
-			"- `mode`: `readable` (default, HTML extracted to Markdown) or `raw` (no extraction).",
+			"- `mode`: `readable` (default, local Microsoft MarkItDown for documents) or `raw` (original). Conversion creates a distinct derived artifact linked to its immutable original.",
+			"- `view: artifact` returns metadata only; use it to download/convert without exposing source text to the model.",
+			"- `operation: zip-list` lists names, indices and declared sizes without decompressing any member. Then explicitly choose `operation: convert, memberIndex: N` on the original ZIP artifact.",
+			"- Body/templates can splice a complete converted artifact directly: {{artifact:ID}} is literal text; {{artifact:ID,json}} is a complete JSON string value. No saveTo/read/copy-back step is needed.",
 			"- Paging: pass the returned `artifactId` plus `offset`/`nextOffset` to continue; `refresh` forces a new fetch.",
 			"- `saveTo`: project-relative destination for the stored source bytes (never overwrites).",
 			"- POST/PUT with `body` and `headers` for request injection. Templates: `{{env:NAME}}`, `{{file:path}}`, `{{template:path,{\"var\":\"value\"}}}`.",
@@ -165,6 +171,9 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 					artifactId: params.artifactId,
 					refresh: params.refresh,
 					saveTo: params.saveTo,
+					operation: params.operation,
+					memberIndex: params.memberIndex,
+					view: params.view,
 				},
 				envOf(ctx, state,_signal),
 			);

@@ -17,12 +17,14 @@ test("actual tarball installs and loads alone through native ESM and the selecte
 	const paths = packed.files.map((file: { path: string }) => file.path);
 	assert.ok(paths.includes("dist/index.js"));
 	assert.ok(paths.includes("dist/index.d.ts"));
-	assert.ok(paths.every((path: string) => /^(dist\/[^/]+\.(js|d\.ts)|docs\/[^/]+\.md|README\.md|LICENSE|package\.json)$/.test(path)), paths.join("\n"));
+	assert.ok(paths.every((path: string) => /^(dist\/[^/]+\.(js|d\.ts)|docs\/[^/]+\.md|python\/(bridge\.py|requirements\.(in|lock))|README\.md|LICENSE|package\.json)$/.test(path)), paths.join("\n"));
+	for(const file of ['python/bridge.py','python/requirements.in','python/requirements.lock'])assert.ok(paths.includes(file));
 	await writeFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
 	// A lockfile install does not cache the registry metadata needed by a new
 	// consumer. Resolve package dependencies with a fresh, disposable cache so
 	// this test cannot depend on metadata left by previous local installations.
 	execFileSync("npm", ["install", "--cache", join(consumer, "npm-cache"), "--ignore-scripts", "--legacy-peer-deps", "--no-audit", "--no-fund", join(consumer, packed.filename)], { cwd: consumer, env: npmEnv, stdio: "pipe", timeout: 30_000 });
+	for(const file of ['python/bridge.py','python/requirements.in','python/requirements.lock'])assert.deepEqual(await readFile(join(consumer,'node_modules/@seank/pi-web-surfer',file)),await readFile(join(root,file)));
 	const manifest = JSON.parse(await readFile(join(consumer, "node_modules/@seank/pi-web-surfer/package.json"), "utf8"));
 	assert.ok(!("@earendil-works/pi-coding-agent" in (manifest.dependencies ?? {})));
 	assert.ok(!("typebox" in (manifest.dependencies ?? {})));
@@ -33,7 +35,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 assert.equal(existsSync("node_modules/@earendil-works"), false);
 assert.equal(existsSync(join("node_modules", "typebox")), false);
-assert.equal(existsSync(join("node_modules", "parse5")), true);
+assert.equal(existsSync(join("node_modules", "parse5")), false);
+assert.equal(existsSync(join("node_modules", "undici")), true);
 const { loadExtensions } = await import(pathToFileURL(join(process.env.TEST_PI_HOST!, "dist/core/extensions/loader.js")).href);
 const { createEventBus } = await import(pathToFileURL(join(process.env.TEST_PI_HOST!, "dist/core/event-bus.js")).href);
 const loaded = await loadExtensions([join(process.cwd(), "node_modules/@seank/pi-web-surfer/dist/index.js")], process.cwd(), createEventBus());

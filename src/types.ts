@@ -7,7 +7,10 @@
  */
 
 /** Stable failure codes (D11; D14 adds env_unavailable, template_error). */
+import type {ArtifactMeta} from './artifacts.ts';
+
 export const FAILURE_CODES = [
+	"conversion_failed",
 	"malformed_url",
 	"unsupported_scheme",
 	"config_invalid",
@@ -35,7 +38,6 @@ export type FailureCode = (typeof FAILURE_CODES)[number];
 /** Stable warning codes that accompany usable content. */
 export const WARNING_CODES = [
 	"http_error",
-	"extraction_failed",
 	"source_unresolved",
 	"ungrounded_answer",
 ] as const;
@@ -62,6 +64,8 @@ export interface FetchDetails extends BaseDetails {
 	contentType?: string;
 	fetchedAt?: string;
 	artifactId?: string;
+	sourceArtifactId?: string;
+	provenance?: ArtifactMeta['provenance'];
 	mode?: string;
 	totalTextBytes?: number;
 	returnedBytes?: number;

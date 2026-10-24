@@ -304,8 +304,8 @@ test("unterminated placeholders preserve literal prefixes exactly once", () => {
 	assert.equal(resolveTopLevelTemplate("{{env:VALUE}} prefix {{unfinished", { VALUE: "expanded" }).value,
 		"expanded prefix {{unfinished");
 });
-test("tables retain content beyond the old 2000-character cut", () => {
-	assert.ok(htmlToMarkdown("<table><tr><td>" + "a".repeat(2100) + "TAIL</td></tr></table>").includes("TAIL"));
+test("tables retain content beyond the old 2000-character cut", async () => {
+	assert.ok((await htmlToMarkdown("<table><tr><td>" + "a".repeat(2100) + "TAIL</td></tr></table>")).includes("TAIL"));
 });
 test("malformed URL is a controlled failure", async (t) => {
 	const f = await fixture(t);

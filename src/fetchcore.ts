@@ -19,11 +19,13 @@ import {
 	storeRepresentation,
 	type ArtifactMeta,
 } from "./artifacts.ts";
-import { represent } from "./extract.ts";
+import { represent, isHtmlContent } from "./extract.ts";
+import { ConversionError } from './conversion.ts';
+import { artifactFilename, artifactText, deriveArtifact } from './derived.ts';
 import { pathRequestIdentity, projectHash, urlRequestIdentity } from "./identity.ts";
 import { BoundaryError, checkDestination, validateBoundary, type DatastoreBoundary } from "./policy.ts";
 import { httpFetch, validateOrigin, TransportError } from "./transport.ts";
-import { resolveTopLevelTemplate, isTemplateError } from "./templates.ts";
+import { resolveTopLevelTemplateAsync, isTemplateError } from "./templates.ts";
 import type { FetchDetails, ToolOutput, Warning } from "./types.ts";
 
 /**
@@ -45,6 +47,9 @@ export interface FetchRequest {
 	artifactId?: string;
 	refresh?: boolean;
 	saveTo?: string;
+	operation?: 'convert' | 'zip-list';
+	memberIndex?: number;
+	view?: 'page' | 'artifact';
 }
 
 export interface FetchEnvironment {
@@ -74,6 +79,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 	const configDir = path.join(env.cwd, configDirName);
 	const mode = req.mode ?? "readable";
 	if(req.refresh&&req.offset)return fail('invalid_input','refresh cannot be combined with a nonzero offset');
+	if(req.memberIndex!==undefined&&(req.operation!=='convert'||!Number.isSafeInteger(req.memberIndex)||req.memberIndex<0))return fail('invalid_input','memberIndex requires operation convert and a nonnegative entry index');
 
 	// ---- input validation (config-invalid only blocks network ops) ----
 	if (req.artifactId) {
@@ -123,7 +129,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 		}
 		try {
 			if (req.body !== undefined) {
-				const resolved = resolveTopLevelTemplate(req.body, process.env,{cwd:env.cwd});
+				const resolved = await resolveTopLevelTemplateAsync(req.body, process.env,{cwd:env.cwd,artifact:id=>artifactText(id,env)});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set`);
 				}
@@ -131,7 +137,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 				for (const w of resolved.warnings) warnings.push({ code: "template_error", message: w.message });
 			}
 			for (const [k, v] of Object.entries(req.headers ?? {})) {
-				const resolved = resolveTopLevelTemplate(v, process.env,{cwd:env.cwd});
+				const resolved = await resolveTopLevelTemplateAsync(v, process.env,{cwd:env.cwd,artifact:id=>artifactText(id,env)});
 				if (resolved.missingEnv) {
 					return fail("env_unavailable", `environment variable for {{env:${resolved.missingEnv}}} is not set (header ${k})`);
 				}
@@ -139,6 +145,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 				for (const w of resolved.warnings) warnings.push({ code: "template_error", message: w.message });
 			}
 		} catch (err) {
+			if(env.signal?.aborted)return fail('cancelled','Template expansion cancelled');
 			if (isTemplateError(err)) {
 				return fail("template_error", `template resolution failed: ${err.message}`);
 			}
@@ -170,7 +177,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 							// error bodies are not reused for a new URL-only read (D4).
 							(meta.httpStatus === undefined || (meta.httpStatus>=200&&meta.httpStatus<300))&&!meta.sizeCapped);
 					if (reusable) {
-						return serveFromArtifact(meta!, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir);
+						return serveFromArtifact(meta!, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir, req);
 					}
 				}
 			}
@@ -232,8 +239,8 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 
 			const published = await publishArtifact(projectHashValue, identity.key, meta, sourceBytes,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
 			env.signal?.throwIfAborted();
-			await markLatest(projectHashValue, identity.key, published.artifactId);
-			return serveFromArtifact(published, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir);
+			await markLatest(projectHashValue, identity.key, published.artifactId,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
+			return serveFromArtifact(published, env, projectHashValue, mode, req.offset ?? 0, chunkBytes, warnings, req.saveTo, configDir, req);
 		});
 	} catch (err) {
 		if(err instanceof BoundaryError)return fail('destination_blocked',err.message);
@@ -304,10 +311,11 @@ async function serveFromArtifact(
 	warnings: Warning[],
 	saveTo: string | undefined,
 	configDir: string,
+	request: FetchRequest = {},
 ): Promise<FetchResult> {
 	if(meta.sizeCapped)return fail('artifact_unavailable','Artifact contains an incomplete prior response; start a fresh fetch');
 	env.signal?.throwIfAborted();
-	if(meta.sourceKind==='url'){
+	if(meta.sourceUrl){
 		if(env.config.invalid)return configInvalid(env.config.invalid);
 		try{await validateOrigin(meta.sourceUrl!,env.config.config!.fetch.privateNetworks,env.lookupImpl);if(meta.finalUrl&&meta.finalUrl!==meta.sourceUrl)await validateOrigin(meta.finalUrl,env.config.config!.fetch.privateNetworks,env.lookupImpl);}catch(error){if(error instanceof TransportError)return fail(error.code,error.message);throw error;}
 	}
@@ -318,55 +326,32 @@ async function serveFromArtifact(
 		return fail("artifact_unavailable", `artifact ${meta.artifactId} no longer exists (expired or cleaned up); start again`);
 	}
 
-	let text: Buffer | undefined;
-	let binary = false;
-	let extractionWarning: Warning | undefined;
-
-	let rep = await readRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode);
-	if (rep === undefined) {
-		try {
-			const representation = represent(
-				{
-					bytes: sourceBytes,
-					contentType: meta.contentType,
-					sourcePath: meta.sourceKind === "path" ? meta.filePath : undefined,
-				},
-				mode,
-			);
-			if (representation.kind === "text") {
-				rep = representation.text;
-				text = representation.text;
-			} else {
-				binary = true;
-			}
-			if (rep !== undefined) {
-				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode, rep,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
-			}
-		} catch (err) {
-			if(err instanceof BoundaryError||env.signal?.aborted)throw err;
-			// Extraction failure: honest raw-text fallback (D8).
-			extractionWarning = { code: "extraction_failed", message: `extraction failed (${errMessage(err)}); serving raw text` };
-			warnings.push(extractionWarning);
-			const raw = represent({ bytes: sourceBytes, contentType: "text/plain", sourcePath: undefined }, "raw");
-			if (raw.kind === "text") {
-				text = raw.text;
-				rep = raw.text;
-			} else {
-				binary = true;
-			}
-			if (rep !== undefined && !binary) {
-				await storeRepresentation(projectHashValue, meta.requestKey, meta.artifactId, "raw", rep,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
-			}
-		}
-	} else {
-		text = rep;
-		// If a binary artifact was stored without a text representation, mark binary.
-		if (text.length === 0 && meta.sizeBytes > 0) {
-			// An empty text representation for a non-empty source means binary.
-			const representation = represent({ bytes: sourceBytes, contentType: meta.contentType, sourcePath: meta.sourceKind === "path" ? meta.filePath : undefined }, mode);
-			if (representation.kind === "binary") binary = true;
-		}
+	const filename=artifactFilename(meta),documentType=meta.contentType?.split(';')[0]?.trim().toLowerCase();
+	if(request.operation!==undefined||(meta.sourceKind!=='derived'&&mode==='readable'&&(isHtmlContent(meta.contentType,filename)||/\.(pdf|docx)$/i.test(filename)||documentType==='application/pdf'||documentType?.includes('wordprocessingml')))){
+		try{
+			const derived=await deriveArtifact(meta,sourceBytes,request,env);
+			const saved=saveTo?await performSaveTo(saveTo,meta,sourceBytes,env,configDir):undefined;
+			if(saved?.error)warnings.push({code:saved.code??'save_failed',message:saved.error});
+			const result=await serveFromArtifact(derived,env,projectHashValue,'raw',offset,chunkBytes,warnings,undefined,configDir,{view:request.view});
+			if(saved?.savedPath){result.details.savedPath=saved.savedPath;result.content.push({type:'text',text:`[saved original source: ${saved.savedPath}]`});}
+			return result;
+		}catch(error){if(env.signal?.aborted||error instanceof BoundaryError)throw error;if(error instanceof ConversionError)return fail('conversion_failed',`${error.message}; original artifact ${meta.artifactId} retained`,{artifactId:error.artifact?.artifactId??meta.artifactId,sourceArtifactId:meta.artifactId,provenance:error.artifact?.provenance});throw error;}
 	}
+	if(request.view==='artifact'){
+		const saved=saveTo?await performSaveTo(saveTo,meta,sourceBytes,env,configDir):undefined;
+		if(saved?.error)warnings.push({code:saved.code??'save_failed',message:saved.error});
+		return{content:[{type:'text',text:[fetchHeader(meta),`[artifact ${meta.artifactId}; ${meta.sizeBytes} bytes retained; no source text returned]`,...warnings.map(w=>`[warning: ${w.message}]`)].join('\n')}],details:{ok:true,sourceUrl:meta.sourceUrl??meta.filePath??'',finalUrl:meta.finalUrl,path:meta.filePath,method:meta.method,httpStatus:meta.httpStatus,contentType:meta.contentType,fetchedAt:meta.fetchedAt,mode,...(meta.sourceKind==='derived'?{totalTextBytes:meta.sizeBytes}:{}),artifactId:meta.artifactId,sourceArtifactId:meta.provenance?.sourceArtifactId,provenance:meta.provenance,sizeBytes:meta.sizeBytes,returnedBytes:0,...(saved?.savedPath?{savedPath:saved.savedPath}:{}),warnings}};
+	}
+	let text = await readRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode);
+	if (text === undefined) {
+		if(meta.sourceKind==='derived')text=sourceBytes;
+		else {
+			const representation=await represent({bytes:sourceBytes,contentType:meta.contentType,sourcePath:meta.filePath},mode);
+			if(representation.kind==='text')text=representation.text;
+		}
+		if(text!==undefined)await storeRepresentation(projectHashValue,meta.requestKey,meta.artifactId,mode,text,{signal:env.signal,validate:absolute=>validateBoundary(env.boundary,absolute,env.signal)});
+	}
+	const binary=text===undefined;
 
 	if (binary) {
 		const saveToResult = saveTo ? await performSaveTo(saveTo, meta, sourceBytes, env, configDir) : undefined;
@@ -389,6 +374,8 @@ async function serveFromArtifact(
 			...(meta.sizeCapped ? { sizeCapped: true } : {}),
 			...(saveToResult?.savedPath ? { savedPath: saveToResult.savedPath } : {}),
 			binary: true,
+			sourceArtifactId:meta.provenance?.sourceArtifactId,
+			provenance:meta.provenance,
 			warnings,
 		};
 		const textOut = [
@@ -496,6 +483,8 @@ function finishPage(args: {
 	nextOffset?: number;
 	saveToResult?: { savedPath?: string; error?: string };
 }): FetchResult {
+	args.details.provenance=args.meta.provenance;
+	args.details.sourceArtifactId=args.meta.provenance?.sourceArtifactId;
 	const lines: string[] = [fetchHeader(args.meta)];
 	if (args.text.length > 0) lines.push(args.text);
 	if (args.endOfFile) {
@@ -518,7 +507,8 @@ function fetchHeader(meta: ArtifactMeta): string {
 	const status = meta.httpStatus !== undefined ? `HTTP ${meta.httpStatus}` : "local file";
 	const type = meta.contentType ?? "unknown type";
 	const where = meta.sourceUrl ? `${meta.method ?? "GET"} ${meta.sourceUrl}` : `file:${meta.filePath}`;
-	return `[fetch] ${where} (${status}, ${type}, ${meta.sizeBytes} bytes, ${meta.fetchedAt}) artifact=${meta.artifactId}`;
+	const p=meta.provenance;
+	return `[fetch] ${where} (${status}, ${type}, ${meta.sizeBytes} bytes, ${meta.fetchedAt}) artifact=${meta.artifactId}`+(p?`\n[provenance: ${p.operation}; sourceArtifactId=${p.sourceArtifactId}; sourceSha256=${p.sourceSha256}; engine=${p.engine}${p.engineVersion?' '+p.engineVersion:''}${p.member?'; member='+JSON.stringify(p.member):''}]`:'');
 }
 
 function isContinuationByte(text: Buffer, offset: number): boolean {
@@ -612,11 +602,7 @@ function positiveIntOr(value: unknown, fallback: number): number | undefined {
 	return value;
 }
 
-function errMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
-
-function fail(code: FetchDetails["code"], message: string,extra:Pick<FetchDetails,'bytesRead'|'capBytes'>={}): FetchResult {
+function fail(code: FetchDetails["code"], message: string,extra:Pick<FetchDetails,'bytesRead'|'capBytes'|'artifactId'|'sourceArtifactId'|'provenance'>={}): FetchResult {
 	return {
 		content: [{ type: "text", text: `[web_fetch failed] ${code}: ${message}` }],
 		details: { ok: false, code, sourceUrl: "",...extra },
@@ -632,7 +618,7 @@ function executePaging(
 	const artifactId = req.artifactId!;
 	// The artifact id encodes its request key: <requestKey>-<timestamp><rand>.
 	const dash = artifactId.indexOf("-");
-	if (dash <= 0) return Promise.resolve(fail("artifact_error", `unknown artifactId: ${artifactId}`));
+	if (!/^[a-f0-9]{32}-[a-z0-9]+$/.test(artifactId)) return Promise.resolve(fail("artifact_error", `unknown artifactId: ${artifactId}`));
 	const requestKey = artifactId.slice(0, dash);
 	const id = artifactId.slice(dash + 1);
 	const offset = req.offset ?? 0;
@@ -648,6 +634,6 @@ function executePaging(
 		if (!meta || isExpired(meta)) {
 			return fail("artifact_unavailable", `artifact ${artifactId} is not available (expired, cleaned up, or unknown); start again deliberately`);
 		}
-		return serveFromArtifact(meta, env, projectHashValue, mode, offset, chunkBytes, warnings, req.saveTo, path.join(env.cwd, env.configDirName ?? ".pi"));
+		return serveFromArtifact(meta, env, projectHashValue, mode, offset, chunkBytes, warnings, req.saveTo, path.join(env.cwd, env.configDirName ?? ".pi"), req);
 	}).catch(error=>{if(error instanceof BoundaryError)return fail('destination_blocked',error.message);if(env.signal?.aborted||error instanceof CancelledError)return fail('cancelled','Operation cancelled');throw error;});
 }

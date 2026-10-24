@@ -3,7 +3,12 @@ import path from "node:path";
 
 /**
  * Top-level template resolution for injected request bodies and header
- * values (D14). Three placeholder kinds:
+ * values (D14). File/environment/template placeholders plus asynchronous
+ * artifact references: {{artifact:ID}} is literal UTF-8 text and
+ * {{artifact:ID,json}} is a complete JSON string value. Artifact source
+ * content is never recursively interpreted.
+ *
+ * Existing placeholder kinds:
  *
  *   {{env:NAME}}        process environment, resolved at call time. Only
  *                       top-level templates resolve {{env:}}; spliced file
@@ -49,17 +54,27 @@ export interface ResolveResult {
 
 
 export function resolveTopLevelTemplate(template: string, env: NodeJS.ProcessEnv = process.env,options:{cwd?:string}={}): ResolveResult {
-	return resolve(template, env, new Set(), 0, true,options.cwd??process.cwd());
+	const iterator=resolve(template, env, new Set(), 0, true,options.cwd??process.cwd());
+	const step=iterator.next();
+	if(!step.done)throw new TemplateError('Artifact references require the asynchronous resolver');
+	return step.value;
 }
 
-function resolve(
+export async function resolveTopLevelTemplateAsync(template:string, env:NodeJS.ProcessEnv, options:{cwd:string;artifact:(id:string)=>Promise<string>}):Promise<ResolveResult>{
+ const iterator=resolve(template,env,new Set(),0,true,options.cwd);
+ let step=iterator.next();
+ while(!step.done){step=iterator.next(await options.artifact(step.value));}
+ return step.value;
+}
+
+function* resolve(
 	text: string,
 	env: NodeJS.ProcessEnv,
 	visited: Set<string>,
 	depth: number,
 	topLevel: boolean,
 	cwd:string,
-): ResolveResult {
+): Generator<string, ResolveResult, string> {
 	const warnings: TemplateWarning[] = [];
 	let missingEnv: string | undefined;
 	let out = "";
@@ -97,6 +112,14 @@ function resolve(
 			continue;
 		}
 
+		if (spec.startsWith('artifact:')) {
+			const [id, encoding, extra]=spec.slice(9).split(',').map(s=>s.trim());
+			if(!id||extra!==undefined||(encoding!==undefined&&encoding!=='json'))throw new TemplateError('Use {{artifact:ID}} or {{artifact:ID,json}}');
+			const source=yield id;
+			out+=encoding==='json'?JSON.stringify(source):source;
+			continue;
+		}
+
 		if (spec.startsWith("file:")) {
 			const filePath = spec.slice(5).trim();
 			const fileContent = readFileForSplice(filePath,cwd);
@@ -126,7 +149,7 @@ function resolve(
 			nextVisited.add(canonical);
 			const substituted = substituteVars(content.text ?? "", vars, warnings);
 			// Continue resolution in the result (depth incremented).
-			const nested = resolve(substituted, env, nextVisited, depth + 1, false,cwd);
+			const nested = yield* resolve(substituted, env, nextVisited, depth + 1, false,cwd);
 			warnings.push(...nested.warnings);
 			if (nested.missingEnv) missingEnv = missingEnv ?? nested.missingEnv;
 			out += nested.value;

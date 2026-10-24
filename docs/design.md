@@ -21,16 +21,18 @@ as a primary result.
 
 Fetch supports HTTP and HTTPS. Private, loopback, and LAN origins are allowed by
 default; project configuration can deny them. HTTP error bodies remain readable
-with their status disclosed. HTML is converted to readable Markdown; XML, JSON,
-and ordinary text retain their text representation. Binary responses remain
+with their status disclosed. HTML, PDF and DOCX are converted locally to readable
+Markdown; XML, JSON and ordinary text retain their text representation. Binary responses remain
 local artifacts rather than being decoded into tool-result text.
 
-The initial product has no browser automation, login/cookie management, hosted
-extraction service, or secondary summarization-model call. Saved source references
-can feed a separately designed `bottled_query`/document-query workflow; that
-integration motivates the save feature but is not implemented by this package.
-Downloaded content
-is untrusted source material, not instructions or authoritative datastore notes.
+Conversion uses Microsoft's official MarkItDown engine through a narrow,
+asynchronous local Python process. Originals stay immutable; converted Markdown
+is a distinct derived artifact. Artifact references feed POST/PUT bodies and
+bottles directly without a read-into-context/copy-back or intermediate save.
+The tool never starts a hidden summarization/model call. A bottle supplies its
+instructions and explicitly calls its authorized endpoint through `web_fetch`.
+Downloaded content is untrusted source material, not instructions or
+authoritative datastore notes.
 
 ## Package and host boundary
 
@@ -62,7 +64,7 @@ such as "Check whether the release notes describe a changed API."
 | Operation | Recipient | Material sent |
 |---|---|---|
 | Fetch | Requested origin and permitted redirect destinations | URL and ordinary HTTP request metadata |
-| POST/PUT body injection | Requested origin | Injected body: literal template text plus spliced file and template content |
+| POST/PUT body injection | Requested origin | Injected body: literal template text plus explicitly spliced file, artifact and template content |
 | Primary search | Google Gemini API with Google Search grounding | Query and search instruction, not the session transcript |
 | Keyless search | DuckDuckGo HTML endpoint | Query |
 | Source-link resolution | Grounding-link service | The supplied source-link reference |
@@ -141,7 +143,10 @@ retry loops, cache quotas, or performance gates are implied by this document.
 | `maxBodyBytes` | Per-call external-response cap; does not limit internal inputs |
 | `artifactId` | Optional returned reference pinning an existing response |
 | `refresh` | Explicit new fetch, default false |
-| `saveTo` | Optional project-relative destination for the stored source bytes |
+| `saveTo` | Optional new project-relative destination for the selected source bytes |
+| `operation` | `convert` explicitly invokes local conversion; `zip-list` only enumerates archive metadata |
+| `memberIndex` | With `convert`, explicitly decompress/convert this zero-based ZIP entry only |
+| `view` | `page` (default), or `artifact` for identity/provenance without inline source text |
 
 The fetch-to-artifact, page-without-re-download, and explicit save feature are
 core behavior. `artifactId` and `refresh`, their combination rules, and the
@@ -161,10 +166,12 @@ bytes with cache identity keyed by path, file size, and modification time: a
 change in size or modification time produces a fresh artifact, while a
 same-size replacement that preserves the modification time may reuse the prior
 representation; `refresh: true` forces a new read. Content type comes from the
-file extension: `.html`/`.htm` run the same HTML extraction as a URL fetch in
-`readable` mode (so a saved HTML page re-reads as paged Markdown), other
-extensions serve their text, and a missing or unrecognized extension serves raw
-text with no extraction. A missing or unreadable path is an `artifact_error`,
+file extension: HTML, PDF and DOCX use the official converter in `readable`
+mode; plain text/JSON/XML pass through as text. `operation: convert` explicitly
+converts an existing source. The configured engine supports HTML, PDF, DOCX and
+plain text; unsupported formats return a conversion failure while retaining the
+original. Binary data without conversion
+uses a metadata summary. A missing or unreadable path is an `artifact_error`,
 not a success with empty content.
 
 ### Network and body handling
@@ -187,8 +194,9 @@ fetch can be repeated with a higher per-call cap. No automatic retry or hidden
 hosted-extractor fallback is specified.
 
 Non-2xx responses retain the body and return `http_error` as a warning with the
-actual status. Extraction failure returns an honest raw-text fallback with
-`extraction_failed`, not an empty successful article.
+actual status. Conversion failures return `conversion_failed`, identifying the
+retained original (and completed selected-member source when applicable), not
+an empty successful article or an undisclosed raw-text fallback.
 
 **Injected-request redirects:** a same-origin redirect (same scheme and host)
 forwards the method, injected body, and headers unchanged. A cross-origin
@@ -197,12 +205,60 @@ headers, so environment-injected credentials and spliced file content never
 follow a redirect to a different origin. Origin policy is checked at every hop
 as stated above; synthetic tests must cover both redirect shapes.
 
-**Text contract:** UTF-8 text is served as text; invalid/unsupported
-encodings and binary content use the artifact-summary path instead of lossy
-replacement characters. `raw` means no HTML extraction, not arbitrary binary
+**Text contract:** raw text decodes strictly as UTF-8; invalid raw encodings and
+binary content use an artifact summary instead of lossy replacement characters.
+The official engine can decode its supported source encodings into UTF-8 derived
+Markdown. `raw` means no document conversion, not arbitrary binary
 bytes forced into a text block. Stored source bytes remain unchanged in either
-mode. Readable HTML uses the declared parse5 dependency with synthetic extraction
-fixtures; no hosted extraction service is used.
+mode. HTML/PDF/DOCX conversion uses official MarkItDown's public `convert_stream`
+and `StreamInfo` APIs with a local binary stream. No URL, model client, cloud
+endpoint or enabled plugins are supplied. The supported public converter registry
+registers only official HtmlConverter, PdfConverter, DocxConverter and
+PlainTextConverter; built-in auto-registration is disabled. ZipConverter and
+network/cloud converters are never registered, including fallback paths for
+misleading extensions. The hash-locked Python installation selects local
+PDF/DOCX extras, not network transcription/cloud extras.
+
+### Local conversion and ZIP selection
+
+`view: artifact` performs retrieval/conversion but returns only identity, byte
+count and provenance; document text stays outside model context. Otherwise the
+converted artifact supports the same bounded UTF-8 pagination as other text.
+
+Conversion publishes its own immutable `data.bin` and metadata, never changing
+the downloaded original. Provenance records the immediate `sourceArtifactId`,
+its exact byte SHA-256, operation, engine/version, and selected ZIP member
+(index, name, declared size) where applicable. A selected member is itself a
+source artifact between the ZIP and converted Markdown. Derived cache identity
+binds the pinned engine contract, parent ID, operation and explicit index; an
+unchanged original/operation can reuse its completed derived artifact.
+
+ZIP inspection and processing are separate operations. `zip-list` uses public
+stdlib `ZipFile.infolist`, not MarkItDown's whole-ZIP conversion or member reads.
+It produces a JSON-derived pageable index containing names, zero-based indices,
+directory flags and declared uncompressed sizes as exact decimal strings. Those
+sizes inform the agent, never authorize enforcement. `convert` with `memberIndex`
+reads only that exact `ZipInfo` member; duplicate names are unambiguous. A member
+name never becomes a filesystem destination. Nested ZIPs remain source artifacts
+for another explicit list/select operation, never implicit whole-archive work.
+
+Each conversion owns an asynchronous child process and a protected temporary
+directory. Parent/session cancellation kills that owned process group on the
+qualified POSIX host, awaits closure, and removes unfinished temporary files.
+No package-imposed conversion input/output cap, internal-body cap, ZIP expansion
+or ratio limit, member-count quota, conversion timeout/deadline or retry is added.
+Existing external-response limits, text pagination, and existing template
+recursion/cycle semantics are unchanged. Full original and converted source bytes
+remain available subject to the existing per-artifact temporary retention.
+
+PDF conversion extracts available text/tables. Scans without an embedded text
+layer may yield empty Markdown; no OCR/model service is enabled. Check the
+converted byte count before choosing a downstream workflow.
+
+The interpreter is selected explicitly with `WEB_SURFER_PYTHON`, otherwise a
+package-relative `.venv/bin/python` if present, otherwise `python3`. Install the
+shipped `python/requirements.lock` with required hashes; the engine is pinned to
+0.1.9. Conversion does not install dependencies or call network services.
 
 ### Artifacts, paging, and concurrency
 
@@ -275,7 +331,9 @@ configuration directory (`CONFIG_DIR_NAME`), which holds only durable state;
 existing file; refuse symlink traversal and hard-link promotion; recheck the
 approved destination boundary at publication. Copy source bytes to the new
 file and preserve the cached response so its paging reference remains usable.
-Return both artifact reference and saved path. A failed save must not destroy
+An initial fetch/conversion's save writes the original bytes; saving a pinned
+converted artifact writes its Markdown bytes. Return both artifact reference and
+saved path. A failed save must not destroy
 the downloaded evidence or masquerade as a successful save.
 
 **Datastore boundary:** the datastore-owned root/policy-validation API is the
@@ -308,7 +366,7 @@ artifact remains; do not confuse a failed save with a failed network fetch.
 **Body and template injection:** `web_fetch` accepts an optional `method`
 (`GET` by default, `POST`, `PUT`), a `headers` map, and a `body` string,
 extending the input schema. Header values and the body are top-level templates
-supporting three placeholders:
+supporting these placeholders:
 
 - `{{env:NAME}}` resolves from the process environment at call time; an unset
   variable fails with a stable code. Only top-level templates resolve
@@ -319,12 +377,20 @@ supporting three placeholders:
 - `{{template:path,{vars}}}` reads a template file, resolves `{{name}}`
   placeholders against the JSON variable map, and continues resolution in the
   result.
+- `{{artifact:ID}}` inserts the complete UTF-8 text from that project-scoped
+  artifact literally, without evaluating any placeholders in the source.
+  `{{artifact:ID,json}}` instead inserts a complete JSON string value, including
+  quotes and JSON escaping. Artifact IDs are checked in the caller's namespace;
+  expired/missing/non-UTF-8 references fail explicitly. Ownership and retained
+  origin policy are checked afresh before source bytes are read. Only metadata
+  and the explicitly requested endpoint response need reach model context.
 
 `{{file:}}` and `{{template:}}` may be spliced recursively, with a depth cap
 of 3 and cycle detection; exceeding the cap or cycling fails explicitly. A JSON map
 parse failure falls back to naive `key:value` parsing with a warning. Spliced
-content is inserted as-is, without escaping or encoding transformation. The
-literal body, environment expansion, header values, file splices and expanded
+content is inserted as-is, except the explicit `artifact:ID,json` JSON-string
+encoding. Literal artifact bytes never recurse through placeholder resolution.
+The literal body, environment expansion, header values, file splices and expanded
 templates have no package-imposed size cap. `maxBodyBytes` limits the external
 response, not internally supplied request material. The recursion-depth and
 cycle checks still apply.
@@ -408,7 +474,8 @@ Code vocabulary:
 - Save/search: `destination_blocked`, `save_failed`, `key_unavailable`,
   `search_failed`.
 - Body/template: `env_unavailable`, `template_error`.
-- Content warnings: `http_error`, `extraction_failed`, `source_unresolved`,
+- Conversion: `conversion_failed` (original evidence remains available).
+- Content warnings: `http_error`, `source_unresolved`,
   `ungrounded_answer`.
 
 Policy rejection and I/O failure remain distinct. Cancellation stops owned
@@ -426,6 +493,17 @@ reference projects is not an implementation input: author the code from the
 reviewed contract and preserve any applicable attribution.
 
 The acceptance tests demonstrate:
+
+- Actual official HTML/PDF/DOCX conversion with outbound sockets disabled in an
+  isolated test wrapper; immutable original/derived identities, byte-digest
+  provenance, paging, explicit failures and owned-process cancellation.
+- ZIP enumeration without member reads, explicit indexed selection, duplicate
+  names, no filesystem extraction by member path, and large uncapped members.
+- Registered native `web_fetch` converting a synthetic PDF with metadata-only
+  output, then posting its entire converted text through a template to a local
+  Ollama-compatible fixture. Compare the exact complete server input with the
+  converted artifact and verify all originating-model contexts/transcripts
+  exclude PDF text; only the 300-word fixture response is returned.
 
 - Source and packed extension loading on each claimed host version, with no
   duplicate Pi runtime or implicit companion dependency.

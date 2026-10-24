@@ -28,7 +28,8 @@ export interface ArtifactMeta {
 	artifactId: string;
 	requestKey: string;
 	projectHash: string;
-	sourceKind: "url" | "path";
+	sourceKind: "url" | "path" | "derived" | "zip-member";
+	provenance?: { sourceArtifactId: string; sourceSha256: string; operation: string; engine: string; engineVersion?: string; member?: {index:number;name:string;declaredSize:string}; memberCount?:number };
 	sourceUrl?: string;
 	finalUrl?: string;
 	filePath?: string;
@@ -111,13 +112,20 @@ export async function publishArtifact(
 }
 
 /** Records this artifact as the reusable latest for its request key. */
-export async function markLatest(projectHash: string, requestKey: string, artifactId: string): Promise<void> {
+export async function markLatest(projectHash: string, requestKey: string, artifactId: string, publication?:{signal?:AbortSignal;validate:(absolute:string)=>Promise<void>}): Promise<void> {
 	const dir = requestDir(projectHash, requestKey);
+	publication?.signal?.throwIfAborted();
+	await publication?.validate(dir);
 	await protectedDir(dir);
 	const latest = path.join(dir, "latest");
 	const tmp = `${latest}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-	await writeProtectedFile(tmp, artifactId);
-	await rename(tmp, latest);
+	try {
+		await writeProtectedFile(tmp, artifactId,publication?.signal);
+		publication?.signal?.throwIfAborted();
+		await publication?.validate(latest);
+		publication?.signal?.throwIfAborted();
+		await rename(tmp, latest);
+	} finally { await rm(tmp,{force:true}); }
 }
 
 export async function readLatest(projectHash: string, requestKey: string): Promise<string | undefined> {
