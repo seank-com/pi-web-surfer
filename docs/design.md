@@ -13,6 +13,13 @@ without that service. See [datastore ownership](#saveto-and-datastore-ownership)
 
 ## Purpose and scope
 
+`web_fetch` requires exactly one ready, compatible pi-markdown-datastore public
+ownership-policy service. This hard dependency applies even to plain URL fetches
+and local-file reads without `saveTo`, because protected artifact placement must
+be validated. Missing, unready, incompatible or ambiguous policy discovery fails
+closed; `web_search` does not require that service. Policy-service availability
+is distinct from search-index freshness or semantic-search readiness.
+
 `web_search` discovers sources; `web_fetch` retrieves and verifies them. Fetch
 stores the response outside model context and serves bounded pages without
 re-downloading. Search uses Gemini Google Search grounding as the keyed primary

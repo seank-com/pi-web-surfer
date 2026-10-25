@@ -7,6 +7,12 @@ A private, unpublished standalone Pi extension with two tools:
 - `web_search` uses Gemini grounding when a key is present, or a disclosed
   keyless DuckDuckGo selection when no key is configured.
 
+`web_fetch` requires exactly one ready, compatible pi-markdown-datastore
+ownership-policy service, including for plain URL fetches and local-file reads
+without `saveTo`: it must validate protected artifact placement. Missing policy
+availability fails closed; `web_search` does not require that service. This is a
+policy-service dependency, not a requirement for fresh search indexes.
+
 See [design](docs/design.md) for the contract and [setup](docs/setup.md) for
 installation. Pi supplies host peers; do not load the extension twice.
 
