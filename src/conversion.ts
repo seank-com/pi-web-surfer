@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,7 @@ export function conversionPython(): string {
 export async function convertLocal(bytes: Buffer, operation: 'convert'|'zip-list'|'zip-member', info: {filename?: string; mimetype?: string; member?: number}, options: {signal?: AbortSignal; validate?: (directory: string)=>Promise<void>} = {}): Promise<{bytes: Buffer; info: ConversionInfo}> {
  const {signal}=options;
  signal?.throwIfAborted();
- const directory=path.join(os.tmpdir(),'web-surfer-conversion-'+randomUUID());
+ const directory=path.join(await realpath(os.tmpdir()),'web-surfer-conversion-'+randomUUID());
  await options.validate?.(directory);
  await mkdir(directory,{mode:0o700});
  try {

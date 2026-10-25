@@ -243,7 +243,9 @@ name never becomes a filesystem destination. Nested ZIPs remain source artifacts
 for another explicit list/select operation, never implicit whole-archive work.
 
 Each conversion owns an asynchronous child process and a protected temporary
-directory. Parent/session cancellation kills that owned process group on the
+directory. Its existing temporary parent is resolved to its physical path before
+public datastore-policy validation, including when the OS supplies a symlinked
+`TMPDIR`. Parent/session cancellation kills that owned process group on the
 qualified POSIX host, awaits closure, and removes unfinished temporary files.
 No package-imposed conversion input/output cap, internal-body cap, ZIP expansion
 or ratio limit, member-count quota, conversion timeout/deadline or retry is added.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,readFile,writeFile,mkdir,rm,readdir,stat} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,mkdir,rm,readdir,stat,realpath,symlink} from 'node:fs/promises';
 import {watch,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
@@ -12,7 +12,15 @@ import {executeFetch,type FetchEnvironment} from '../src/fetchcore.ts';
 import {KeyLock,readArtifactMeta,readSourceBytes,namespaceRoot} from '../src/artifacts.ts';
 import {projectHash,sha256Hex} from '../src/identity.ts';
 import {artifactText} from '../src/derived.ts';
-import {conversionPython} from '../src/conversion.ts';
+import {conversionPython,convertLocal} from '../src/conversion.ts';
+
+test('conversion validates the physical scratch path when TMPDIR is a symlink',async t=>{
+ const root=await realpath(await mkdtemp(join(tmpdir(),'web-conversion-alias-'))),alias=join(root,'tmp-alias'),previous=process.env.TMPDIR;
+ await symlink(root,alias,'dir');process.env.TMPDIR=alias;
+ t.after(async()=>{if(previous===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previous;await rm(root,{recursive:true,force:true});});
+ const converted=await convertLocal(Buffer.from('<h1>Alias conversion</h1>'),'convert',{filename:'fixture.html',mimetype:'text/html'},{validate:async directory=>assert.equal(dirname(directory),root)});
+ assert.equal(converted.bytes.toString(),'# Alias conversion');
+});
 
 async function fixture(t:any){
  const root=await mkdtemp(join(tmpdir(),'web-conversion-fixture-')),cwd=join(root,'project');await mkdir(cwd);

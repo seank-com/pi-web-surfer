@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm,realpath,symlink} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {findPackageJSON} from 'node:module';
 import {createServer} from 'node:http';
 const root=await realpath(await mkdtemp(join(tmpdir(),'web-native-conversion-')));
-process.chdir(root);process.env.HOME=root;process.env.TMPDIR=join(root,'tmp');await mkdir(process.env.TMPDIR,{mode:0o700});
+process.chdir(root);process.env.HOME=root;const physicalTmp=join(root,'tmp');await mkdir(physicalTmp,{mode:0o700});process.env.TMPDIR=join(root,'tmp-alias');await symlink(physicalTmp,process.env.TMPDIR,'dir');
 const host=process.env.PI_CODING_AGENT_PACKAGE!,data=process.env.DATASTORE_PACKAGE!;
 assert.ok(host&&data&&process.env.WEB_SURFER_PYTHON,'Explicit host, companion and local conversion interpreter required');
 const sdk=await import(pathToFileURL(join(host,'dist/index.js')).href);
