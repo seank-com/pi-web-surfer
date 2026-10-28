@@ -12,6 +12,16 @@ jobs:
         with:
           node-version: 24.14.1
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.14.6
+      - name: Qualify local converter
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/web-surfer-python"
+          "$RUNNER_TEMP/web-surfer-python/bin/python" -m pip install --require-hashes -r python/requirements.lock
+          "$RUNNER_TEMP/web-surfer-python/bin/python" -m pip check
+          echo "WEB_SURFER_PYTHON=$RUNNER_TEMP/web-surfer-python/bin/python" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run check
       - run: npm test

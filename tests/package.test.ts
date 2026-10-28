@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {conversionPython} from '../src/conversion.ts';
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const host = process.env.PI_CODING_AGENT_PACKAGE ?? join(root, "node_modules/@earendil-works/pi-coding-agent");
@@ -25,6 +26,10 @@ test("actual tarball installs and loads alone through native ESM and the selecte
 	// this test cannot depend on metadata left by previous local installations.
 	execFileSync("npm", ["install", "--cache", join(consumer, "npm-cache"), "--ignore-scripts", "--legacy-peer-deps", "--no-audit", "--no-fund", join(consumer, packed.filename)], { cwd: consumer, env: npmEnv, stdio: "pipe", timeout: 30_000 });
 	for(const file of ['python/bridge.py','python/requirements.in','python/requirements.lock'])assert.deepEqual(await readFile(join(consumer,'node_modules/@seank/pi-web-surfer',file)),await readFile(join(root,file)));
+	await writeFile(join(consumer,'save-receipt-probe.ts'),await readFile(join(root,'tests/fixtures/save-receipt-probe.ts')));
+	await writeFile(join(consumer,'documents.py'),await readFile(join(root,'tests/fixtures/documents.py')));
+	const receiptOutput=execFileSync(process.execPath,[join(consumer,'save-receipt-probe.ts')],{cwd:consumer,env:{...process.env,HOME:join(consumer,'home'),PI_CODING_AGENT_DIR:join(consumer,'receipt-profile'),TEST_PI_HOST:host,WEB_SURFER_ENTRY:pathToFileURL(join(consumer,'node_modules/@seank/pi-web-surfer/dist/index.js')).href,WEB_SURFER_PYTHON:conversionPython()},encoding:'utf8'});
+	assert.match(receiptOutput,/PASS: registered PDF\/DOCX metadata-only original\/converted save receipts/);
 	const manifest = JSON.parse(await readFile(join(consumer, "node_modules/@seank/pi-web-surfer/package.json"), "utf8"));
 	assert.ok(!("@earendil-works/pi-coding-agent" in (manifest.dependencies ?? {})));
 	assert.ok(!("typebox" in (manifest.dependencies ?? {})));

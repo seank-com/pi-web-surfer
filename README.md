@@ -61,11 +61,53 @@ package; the environment does not.
 - `{{artifact:ID}}` inserts the complete artifact's UTF-8 text literally.
   `{{artifact:ID,json}}` inserts a complete quoted JSON string value. Inserted
   content is never interpreted as more placeholders. References are project
-  scoped, expire with the artifact, and recheck current ownership/origin policy.
+  scoped and recheck current ownership/origin policy. Each artifact expires one
+  hour after creation; reads do not renew it, and temporary-file cleanup may
+  remove it sooner. Save converted text for durable reuse. For an unavailable
+  handle, deliberately reacquire the source rather than guessing a replacement ID.
 - `saveTo` creates a new project-relative file without overwriting or indexing.
   An initial fetch/conversion saves the original bytes. Paging a chosen artifact
   saves that artifact's bytes, so use the original ID with `mode: raw` to save
   the original, or the converted ID to save Markdown.
+
+### Save converted PDF/DOCX text without loading it into context
+
+First convert a local file (a URL works the same way):
+
+```json
+{"path":"report.pdf","view":"artifact"}
+```
+
+Then pin the returned **converted** `artifactId`, not its `sourceArtifactId`:
+
+```json
+{"artifactId":"RETURNED_CONVERTED_ID","view":"artifact","saveTo":"sources/report.md"}
+```
+
+Use `report.docx` the same way. `saveTo` is relative to the project cwd, not a
+previous shell `cd`; absolute destinations are rejected. Successful metadata-only
+saves report the path, saved byte kind (original or converted), and byte count.
+Keep the source identity/hash and provenance with durable text when needed.
+
+In contrast, adding `"saveTo":"sources/report.pdf"` to the **first** call saves
+original PDF bytes, even in readable mode. A `.md` destination suffix does not
+convert saved bytes. The second call above saves the converted Markdown bytes.
+Neither call returns document text in model context.
+
+### JSON artifact splices
+
+A JSON splice supplies the entire field value, including quotes and escaping:
+
+```text
+Correct:   {"content":{{artifact:ID,json}}}
+Incorrect: {"content":"{{artifact:ID,json}}"}
+Incorrect: {"content":{{artifact:ID,json}}"}
+```
+
+Do not add outside or trailing quotes, or concatenate the splice inside a JSON
+string. The JSON encoder already escapes quotes, newlines, form feeds and other
+control characters; Unicode text does not need ASCII stripping. The literal
+`{{artifact:ID}}` form does not JSON-escape text.
 
 ### Convert and summarize without loading document text into context
 

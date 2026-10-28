@@ -63,7 +63,7 @@ const FetchSchema = Type.Object({
 	),
 	artifactId: Type.Optional(
 		Type.String({
-			description: "Pin an existing response for paging or saving. Omit url/path when set.",
+			description: "Pin an existing artifact for paging or saving. Omit url/path when set. Artifacts expire one hour after creation; reads do not renew them.",
 		}),
 	),
 	refresh: Type.Optional(
@@ -71,7 +71,7 @@ const FetchSchema = Type.Object({
 	),
 	saveTo: Type.Optional(
 		Type.String({
-			description: "Project-relative destination for the stored source bytes. Never overwrites.",
+			description: "New project-relative destination, resolved from project cwd, never overwrites. On an initial fetch/conversion saves original bytes; with a converted artifactId saves converted text.",
 		}),
 	),
 });
@@ -139,9 +139,10 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 			"- `mode`: `readable` (default, local Microsoft MarkItDown for documents) or `raw` (original). Conversion creates a distinct derived artifact linked to its immutable original.",
 			"- `view: artifact` returns metadata only; use it to download/convert without exposing source text to the model.",
 			"- `operation: zip-list` lists names, indices and declared sizes without decompressing any member. Then explicitly choose `operation: convert, memberIndex: N` on the original ZIP artifact.",
-			"- Body/templates can splice a complete converted artifact directly: {{artifact:ID}} is literal text; {{artifact:ID,json}} is a complete JSON string value. No saveTo/read/copy-back step is needed.",
-			"- Paging: pass the returned `artifactId` plus `offset`/`nextOffset` to continue; `refresh` forces a new fetch.",
-			"- `saveTo`: project-relative destination for the stored source bytes (never overwrites).",
+			"- Body/templates splice complete artifacts directly: {{artifact:ID}} is literal text; {{artifact:ID,json}} is an entire JSON string value, already quoted/escaped (including control characters). Correct: {\"content\":{{artifact:ID,json}}}. Incorrect: {\"content\":\"{{artifact:ID,json}}\"} or a trailing quote after the splice. No saveTo/read/copy-back step is needed.",
+			"- Paging/reuse: pass the returned `artifactId` plus `offset`/`nextOffset`; `refresh` forces a new fetch. IDs expire one hour after creation, without read renewal; save converted text for durable reuse, or deliberately reacquire an unavailable source.",
+			"- Save converted PDF/DOCX text in two calls: first {\"path\":\"report.pdf\",\"view\":\"artifact\"}; then {\"artifactId\":\"RETURNED_CONVERTED_ID\",\"view\":\"artifact\",\"saveTo\":\"sources/report.md\"}. Use report.docx the same way. No document text enters model context.",
+			"- `saveTo` is project-relative to project cwd and never overwrites. On the original fetch/conversion it saves original PDF/DOCX bytes, regardless of destination suffix; pin the converted artifact to save text. Successful metadata-only saves state path, byte kind and byte count.",
 			"- POST/PUT with `body` and `headers` for request injection. Templates: `{{env:NAME}}`, `{{file:path}}`, `{{template:path,{\"var\":\"value\"}}}`.",
 			"- Non-2xx responses keep their body with the status disclosed as a warning.",
 			"- Binary responses are stored artifacts, not inline text.",

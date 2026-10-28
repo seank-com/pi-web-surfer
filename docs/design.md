@@ -148,7 +148,7 @@ retry loops, cache quotas, or performance gates are implied by this document.
 | `offset` | Byte offset in the served UTF-8 text, default zero |
 | `chunkBytes` | Per-call response-page byte budget |
 | `maxBodyBytes` | Per-call external-response cap; does not limit internal inputs |
-| `artifactId` | Optional returned reference pinning an existing response |
+| `artifactId` | Optional returned reference pinning an existing response; expires one hour after creation, without read renewal. Save converted text for durable reuse. |
 | `refresh` | Explicit new fetch, default false |
 | `saveTo` | Optional new project-relative destination for the selected source bytes |
 | `operation` | `convert` explicitly invokes local conversion; `zip-list` only enumerates archive metadata |
@@ -342,7 +342,9 @@ approved destination boundary at publication. Copy source bytes to the new
 file and preserve the cached response so its paging reference remains usable.
 An initial fetch/conversion's save writes the original bytes; saving a pinned
 converted artifact writes its Markdown bytes. Return both artifact reference and
-saved path. A failed save must not destroy
+saved path. Metadata-only successful saves also state the project-relative saved
+path, byte kind (original source, converted/derived artifact, or selected ZIP
+member), and exact saved byte count in model-facing text. A failed save must not destroy
 the downloaded evidence or masquerade as a successful save.
 
 **Datastore boundary:** the datastore-owned root/policy-validation API is the

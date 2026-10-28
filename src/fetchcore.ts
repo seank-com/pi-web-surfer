@@ -333,14 +333,14 @@ async function serveFromArtifact(
 			const saved=saveTo?await performSaveTo(saveTo,meta,sourceBytes,env,configDir):undefined;
 			if(saved?.error)warnings.push({code:saved.code??'save_failed',message:saved.error});
 			const result=await serveFromArtifact(derived,env,projectHashValue,'raw',offset,chunkBytes,warnings,undefined,configDir,{view:request.view});
-			if(saved?.savedPath){result.details.savedPath=saved.savedPath;result.content.push({type:'text',text:`[saved original source: ${saved.savedPath}]`});}
+			if(saved?.savedPath){result.details.savedPath=saved.savedPath;result.content.push({type:'text',text:savedArtifactReceipt(saved.savedPath,meta,sourceBytes.length)});}
 			return result;
 		}catch(error){if(env.signal?.aborted||error instanceof BoundaryError)throw error;if(error instanceof ConversionError)return fail('conversion_failed',`${error.message}; original artifact ${meta.artifactId} retained`,{artifactId:error.artifact?.artifactId??meta.artifactId,sourceArtifactId:meta.artifactId,provenance:error.artifact?.provenance});throw error;}
 	}
 	if(request.view==='artifact'){
 		const saved=saveTo?await performSaveTo(saveTo,meta,sourceBytes,env,configDir):undefined;
 		if(saved?.error)warnings.push({code:saved.code??'save_failed',message:saved.error});
-		return{content:[{type:'text',text:[fetchHeader(meta),`[artifact ${meta.artifactId}; ${meta.sizeBytes} bytes retained; no source text returned]`,...warnings.map(w=>`[warning: ${w.message}]`)].join('\n')}],details:{ok:true,sourceUrl:meta.sourceUrl??meta.filePath??'',finalUrl:meta.finalUrl,path:meta.filePath,method:meta.method,httpStatus:meta.httpStatus,contentType:meta.contentType,fetchedAt:meta.fetchedAt,mode,...(meta.sourceKind==='derived'?{totalTextBytes:meta.sizeBytes}:{}),artifactId:meta.artifactId,sourceArtifactId:meta.provenance?.sourceArtifactId,provenance:meta.provenance,sizeBytes:meta.sizeBytes,returnedBytes:0,...(saved?.savedPath?{savedPath:saved.savedPath}:{}),warnings}};
+		return{content:[{type:'text',text:[fetchHeader(meta),`[artifact ${meta.artifactId}; ${meta.sizeBytes} bytes retained; no source text returned]`,...(saved?.savedPath?[savedArtifactReceipt(saved.savedPath,meta,sourceBytes.length)]:[]),...warnings.map(w=>`[warning: ${w.message}]`)].join('\n')}],details:{ok:true,sourceUrl:meta.sourceUrl??meta.filePath??'',finalUrl:meta.finalUrl,path:meta.filePath,method:meta.method,httpStatus:meta.httpStatus,contentType:meta.contentType,fetchedAt:meta.fetchedAt,mode,...(meta.sourceKind==='derived'?{totalTextBytes:meta.sizeBytes}:{}),artifactId:meta.artifactId,sourceArtifactId:meta.provenance?.sourceArtifactId,provenance:meta.provenance,sizeBytes:meta.sizeBytes,returnedBytes:0,...(saved?.savedPath?{savedPath:saved.savedPath}:{}),warnings}};
 	}
 	let text = await readRepresentation(projectHashValue, meta.requestKey, meta.artifactId, mode);
 	if (text === undefined) {
@@ -501,6 +501,11 @@ function finishPage(args: {
 		lines.push(`[warning: ${w.message}]`);
 	}
 	return { content: [{ type: "text", text: lines.join("\n") }], details: args.details };
+}
+
+function savedArtifactReceipt(savedPath:string,meta:ArtifactMeta,byteCount:number):string {
+	const kind=meta.sourceKind==='derived'?(meta.provenance?.operation==='convert'?'converted artifact bytes':'derived artifact bytes'):meta.sourceKind==='zip-member'?'selected ZIP member bytes':'original source bytes';
+	return `[saved: ${savedPath}; ${kind}; ${byteCount} bytes]`;
 }
 
 function fetchHeader(meta: ArtifactMeta): string {
