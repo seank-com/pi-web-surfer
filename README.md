@@ -186,5 +186,8 @@ source never enters the originating model context. Tests use synthetic responses
 and disposable protected projects, not live providers or agent state.
 
 Run `npm run hooks:install` to enable private-term/secret checks before commits
-and pushes. `npm run check:private -- --all` checks staged contents. Installation,
+and pushes. Credentials are nonempty `~/.env` values whose assignment names
+contain case-sensitive `TOKEN`, `API_KEY`, or `PASSWORD`, without a minimum
+value length; the `~/.pii` term checks remain unchanged.
+`npm run check:private -- --all` checks staged contents. Installation,
 publication, live provider calls and runtime activation require separate scope.
