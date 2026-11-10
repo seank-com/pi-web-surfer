@@ -54,6 +54,8 @@ export interface ConfigLoadResult {
 	resolvedDownloadsDir?: string;
 	/** Downloads directory could not be created or accessed. Fetch/export stays blocked; search does not. */
 	exportError?: string;
+	/** Present downloadsDir is unusable. Does not invalidate unrelated search/fetch settings. */
+	downloadsError?: string;
 }
 
 export function configDirectory(cwd: string, configDirName = ".pi"): string {
@@ -147,9 +149,10 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 	}
 	if (root.downloadsDir !== undefined) {
 		if (typeof root.downloadsDir !== "string" || root.downloadsDir.length === 0) {
-			return { invalid: "downloadsDir: must be a non-empty path" };
+			result.downloadsError = "downloadsDir: must be a non-empty path";
+		} else {
+			result.config!.downloadsDir = root.downloadsDir;
 		}
-		result.config!.downloadsDir = root.downloadsDir;
 	}
 	return result;
 }
@@ -172,6 +175,9 @@ export function resolveConfiguredPath(value: string, cwd: string): string {
 export function initializeDownloads(cwd: string, configDirName = ".pi"): ConfigLoadResult {
 	const loaded = loadConfig(cwd, configDirName);
 	if (loaded.invalid || !loaded.config) return loaded;
+	if (loaded.downloadsError) {
+		return { ...loaded, exportError: `${loaded.downloadsError} Fetch and export stay disabled until downloadsDir is corrected.` };
+	}
 	const file = configPath(cwd, configDirName);
 	let exists = true;
 	try {

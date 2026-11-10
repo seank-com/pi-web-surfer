@@ -21,7 +21,7 @@ export interface DatastoreBoundary {
 	warning?: string;
 	validate?: (absolute: string, signal?: AbortSignal) => Promise<void>;
 	/** Fresh public discovery. Call after companion session_start, and again before publication. */
-	inspect?: () => Promise<{ mode: ProtectionMode; warning?: string }>;
+	inspect?: (signal?: AbortSignal) => Promise<{ mode: ProtectionMode; warning?: string }>;
 }
 
 interface Classification {
@@ -117,16 +117,18 @@ export function discoverDatastoreBoundary(
 		});
 	const policyCode = (error: unknown): string | undefined =>
 		error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
-	const inspect = async (): Promise<{ mode: ProtectionMode; warning?: string }> => {
+	const inspect = async (signal?: AbortSignal): Promise<{ mode: ProtectionMode; warning?: string }> => {
+		signal?.throwIfAborted();
 		const found = classify();
 		if (!found.needsPolicyError || !found.instanceId) return { mode: found.mode, warning: found.warning };
 		try {
-			await request(found.instanceId, "roots", {});
+			await request(found.instanceId, "roots", {}, signal);
 			return {
 				mode: "incompatible",
 				warning: "Datastore policy replied ready:false but roots succeeded. Exports are blocked until that contradiction is corrected.",
 			};
 		} catch (error) {
+			signal?.throwIfAborted();
 			const code = policyCode(error);
 			if (code === "CONFIG_MISSING") return { mode: "absent" };
 			const shown = code ?? "unavailable";
@@ -143,7 +145,7 @@ export function discoverDatastoreBoundary(
 			return false;
 		},
 		async validate(absolute, signal) {
-			const found = await inspect();
+			const found = await inspect(signal);
 			if (found.mode === "absent") return;
 			if (found.mode !== "ready") throw new Error(found.warning ?? "Datastore policy unavailable");
 			const current = classify();

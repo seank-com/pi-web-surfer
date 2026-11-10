@@ -14,7 +14,7 @@ import {
 	FALLBACK_WARNING,
 	GeminiAdapter,
 } from "../src/search.ts";
-import { createSessionState } from "../src/tools.ts";
+import { createSessionState, registerWebSurferSession, registerWebSurferTools } from "../src/tools.ts";
 
 const PAGE_HTML = `<!doctype html><html><head><title>Test Page</title></head><body>
 <h1>Integration Page</h1>
@@ -627,4 +627,73 @@ test("session boundary discovery is optional when absent and blocks incompatible
 	assert.match(invalidFound.warning ?? "", /CONFIG_INVALID/);
 	const unavailable = await createSessionState({ cwd: dir, events: policyBus("STORE_UNAVAILABLE") });
 	assert.match((await unavailable.boundary.inspect!()).warning ?? "", /STORE_UNAVAILABLE/);
+});
+
+test("inspection forwards cancellation and a bad downloadsDir leaves search usable", async (t) => {
+	const { dir, cleanup } = projectDir();
+	t.after(() => cleanup());
+	mkdirSync(path.join(dir, ".pi", "web-surfer"), { recursive: true, mode: 0o700 });
+	writeFileSync(
+		path.join(dir, ".pi", "web-surfer", "config.json"),
+		JSON.stringify({ search: { backend: "duckduckgo" }, downloadsDir: 42 }),
+		{ mode: 0o600 },
+	);
+	const state = await createSessionState({ cwd: dir });
+	assert.equal(state.config.invalid, undefined);
+	assert.match(state.config.exportError ?? "", /downloadsDir/);
+	let searches = 0;
+	state.searcher = {
+		search: async () => {
+			searches++;
+			return { text: "ok", details: { ok: true, backend: "duckduckgo", resultCount: 0 } };
+		},
+	};
+	const tools = new Map<string, { execute: (...args: any[]) => Promise<any> }>();
+	registerWebSurferTools({ registerTool: (tool: any) => tools.set(tool.name, tool), on() {} } as any, () => state);
+	const searched = await tools.get("web_search")!.execute("s", { query: "q" }, undefined, undefined, { cwd: dir });
+	assert.equal(searched.details.ok, true);
+	assert.equal(searches, 1);
+	const fetched = await executeFetch({ url: "http://127.0.0.1/unused" }, { cwd: dir, config: state.config, boundary: state.boundary, lock: state.lock });
+	assert.equal(fetched.details.code, "config_invalid");
+
+	const controller = new AbortController();
+	let rpcSignal: AbortSignal | undefined;
+	let replyHandler: ((data: unknown) => void) | undefined;
+	const holdingBus: EventBusLike = {
+		emit(type, data) {
+			if (type === CAPABILITY_REQUEST) {
+				const req = data as { requestId: string };
+				replyHandler?.({ version: 1, requestId: req.requestId, capability: { version: 1, contractVersion: 1, ready: false, stores: [], policyVersion: 1, instanceId: "held" } });
+			}
+			if (type === POLICY_REQUEST) {
+				const req = data as { signal?: AbortSignal; reject: (error: unknown) => void };
+				rpcSignal = req.signal;
+				req.signal?.addEventListener("abort", () => req.reject(new Error("cancelled")));
+			}
+		},
+		on(type, handler) {
+			if (type === CAPABILITY_REPLY) replyHandler = handler;
+			return () => { replyHandler = undefined; };
+		},
+	};
+	const held = await createSessionState({ cwd: dir, events: holdingBus });
+	const pending = held.boundary.inspect!(controller.signal);
+	assert.ok(rpcSignal);
+	controller.abort();
+	await assert.rejects(pending);
+	assert.equal(rpcSignal!.aborted, true);
+
+	const piState: { current?: typeof held } = {};
+	const handlers = new Map<string, (...args: any[]) => any>();
+	let notices = 0;
+	registerWebSurferSession(
+		{ on: (name: string, handler: any) => handlers.set(name, handler), events: holdingBus } as any,
+		piState,
+	);
+	await handlers.get("session_start")!({}, { cwd: dir });
+	const discovering = handlers.get("resources_discover")!({}, { ui: { notify() { notices++; }, setStatus() {} } });
+	piState.current?.controller.abort();
+	piState.current = undefined;
+	await discovering;
+	assert.equal(notices, 0);
 });

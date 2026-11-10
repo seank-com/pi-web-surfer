@@ -209,6 +209,21 @@ test("an explicit downloadsDir is not replaced", () => {
 	}
 });
 
+test("a bad downloadsDir does not invalidate unrelated settings or overwrite the file", () => {
+	const { dir, cleanup } = project();
+	try {
+		writeConfigFixture(dir, { schemaVersion: CONFIG_SCHEMA_VERSION, search: { backend: "duckduckgo" }, downloadsDir: 42 });
+		const before = readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8");
+		const result = initializeDownloads(dir);
+		assert.equal(result.invalid, undefined);
+		assert.equal(result.config?.search.backend, "duckduckgo");
+		assert.match(result.exportError ?? "", /downloadsDir/);
+		assert.equal(readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8"), before);
+	} finally {
+		cleanup();
+	}
+});
+
 test("malformed config is not overwritten with a downloads default", () => {
 	const { dir, cleanup } = project();
 	try {

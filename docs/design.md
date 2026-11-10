@@ -134,8 +134,10 @@ visible. Configuration is loaded as a complete document, not partially applied.
 home-relative path such as `~/Downloads/example`, is preserved. Missing download
 directories are created during startup and must be accessible. A malformed or
 unreadable configuration is not overwritten with this default. Failure to create
-or access the directory is reported at startup; later `web_fetch` calls return
-that error and `web_search` stays usable.
+or access the directory, or a present but unusable `downloadsDir`, is reported
+at startup and blocks later `web_fetch` calls. It does not invalidate unrelated
+search or fetch settings, and `web_search` stays usable. The bad value is not
+replaced with the default.
 
 `backend` is `auto`, `gemini`, or `duckduckgo`. An explicit Gemini selection
 without a usable key fails rather than overriding the operator's selection.

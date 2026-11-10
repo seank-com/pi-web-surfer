@@ -255,12 +255,18 @@ export function registerWebSurferSession(
 		}
 	});
 	pi.on("resources_discover", async (_event, ctx) => {
-		const found = await piState.current?.boundary.inspect?.();
-		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } } | undefined)?.ui;
-		if (found?.warning) {
-			ui?.setStatus?.("web-surfer", found.warning);
-			ui?.notify?.(found.warning, "warning");
+		const state = piState.current;
+		if (!state || state.controller.signal.aborted) return {};
+		let found: { warning?: string } | undefined;
+		try {
+			found = await state.boundary.inspect?.(state.controller.signal);
+		} catch {
+			return {};
 		}
+		if (piState.current !== state || state.controller.signal.aborted || !found?.warning) return {};
+		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } } | undefined)?.ui;
+		ui?.setStatus?.("web-surfer", found.warning);
+		ui?.notify?.(found.warning, "warning");
 		return {};
 	});
 	pi.on("session_shutdown", async () => {

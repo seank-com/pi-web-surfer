@@ -78,9 +78,15 @@ async function knownStartupFailure(env: FetchEnvironment): Promise<FetchResult |
 		return fail("config_invalid", `${env.config.exportError} Fetch and export stay disabled until the downloads directory is corrected.`);
 	}
 	if (env.boundary.inspect) {
-		const found = await env.boundary.inspect();
-		if (found.mode === "incompatible") {
-			return fail("destination_blocked", found.warning ?? "datastore protection is not usable");
+		try {
+			const found = await env.boundary.inspect(env.signal);
+			if (env.signal?.aborted) return fail("cancelled", "operation cancelled before fetch");
+			if (found.mode === "incompatible") {
+				return fail("destination_blocked", found.warning ?? "datastore protection is not usable");
+			}
+		} catch (error) {
+			if (env.signal?.aborted) return fail("cancelled", "operation cancelled before fetch");
+			throw error;
 		}
 		return undefined;
 	}
