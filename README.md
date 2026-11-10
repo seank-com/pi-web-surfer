@@ -198,3 +198,7 @@ contain case-sensitive `TOKEN`, `API_KEY`, or `PASSWORD`, without a minimum
 value length; the `~/.pii` term checks remain unchanged.
 `npm run check:private -- --all` checks staged contents. Installation,
 publication, live provider calls and runtime activation require separate scope.
+
+Existing-branch pre-push scans exclude history already in the local `origin/main`
+tracking ref. Feature commit messages and added lines outside that baseline remain
+checked. New-branch scans still exclude all known remote history.
