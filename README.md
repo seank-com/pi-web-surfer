@@ -7,6 +7,10 @@ A private, unpublished standalone Pi extension with two tools:
 - `web_search` uses Gemini grounding when a key is present, or a disclosed
   keyless DuckDuckGo selection when no key is configured.
 
+Search reads `GEMINI_SEARCH_API_KEY` from the inherited process environment.
+`.pi/web-surfer/config.json` selects behavior, not credentials. The native
+model-provider variable `GEMINI_API_KEY` is not a search fallback.
+
 `web_fetch` requires exactly one ready, compatible pi-markdown-datastore
 ownership-policy service, including for plain URL fetches and local-file reads
 without `saveTo`: it must validate protected artifact placement. Missing policy

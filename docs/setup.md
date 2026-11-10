@@ -106,8 +106,11 @@ configured; caller/session cancellation remains available.
 ## Search setup and egress
 
 The intended primary is Gemini with Google Search grounding. The operator
-supplies an existing `GEMINI_API_KEY` through the environment or the established
-protected environment-file source. Do not put keys in config, tool arguments,
+supplies an existing `GEMINI_SEARCH_API_KEY` in Pi's inherited environment, loading
+the established protected environment source before startup if needed. The extension
+reads the process export, not a credential in `.pi/web-surfer/config.json`.
+GEMINI_API_KEY is reserved for Pi's model-provider discovery and is not a search
+fallback. Do not put keys in config, tool arguments,
 committed files, screenshots, or errors. Installation does not inspect or copy
 live credentials, create new ones, or enable a paid account.
 

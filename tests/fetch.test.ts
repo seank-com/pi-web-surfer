@@ -505,11 +505,11 @@ test("auto search falls back to DuckDuckGo with the loud warning", async (t) => 
 		new GeminiAdapter(),
 		new DuckDuckGoAdapter({ fetchImpl: fakeFetch }),
 	);
-	const savedKey = process.env.GEMINI_API_KEY;
-	delete process.env.GEMINI_API_KEY;
+	const savedKey = process.env.GEMINI_SEARCH_API_KEY;
+	delete process.env.GEMINI_SEARCH_API_KEY;
 	t.after(() => {
-		if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
-		else process.env.GEMINI_API_KEY = savedKey;
+		if (savedKey === undefined) delete process.env.GEMINI_SEARCH_API_KEY;
+		else process.env.GEMINI_SEARCH_API_KEY = savedKey;
 	});
 
 	const outcome = await searcher.search("test query", {

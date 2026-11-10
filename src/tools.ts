@@ -187,7 +187,7 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 		label: "Web Search",
 		promptSnippet: "Search the web via Google grounding (primary) or DuckDuckGo (fallback).",
 		description: [
-			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_API_KEY). DuckDuckGo HTML is selected automatically only without a key; Gemini errors never trigger a backend switch.",
+			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_SEARCH_API_KEY). DuckDuckGo HTML is selected automatically only without a key; Gemini errors never trigger a backend switch.",
 			"",
 			"- `query` (required). `maxResults` 1-10 (default from project config, 10).",
 			"- Results preserve provider order and content; sources may be absent (ungrounded answers are labeled).",

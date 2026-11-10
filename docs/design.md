@@ -82,8 +82,12 @@ through a provider-payload redaction hook. Intentional tool egress remains an
 operator policy decision. Do not send session history, system prompts, local
 artifacts, or fetched page bodies to search providers as hidden context.
 
-`GEMINI_API_KEY` comes from the operator's environment or established protected
-environment-file source, never a tool argument or behavior config. No credential
+`GEMINI_SEARCH_API_KEY` comes from the operator's process environment, never a
+tool argument or behavior config. An operator may load a protected environment
+file before starting Pi; the extension does not load that file itself. This
+search-specific name avoids automatically enabling Pi's native Google model
+provider through GEMINI_API_KEY. It does not narrow the key's Google-side permissions.
+There is no fallback to the model-provider variable. No credential
 discovery, creation, migration, or live provider call is part of installation.
 The implementation must not echo credentials or secret-bearing upstream URLs in
 errors. Errors report a sanitized host/status and stable reason, not raw SDK
