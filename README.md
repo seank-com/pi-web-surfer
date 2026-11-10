@@ -11,11 +11,12 @@ Search reads `GEMINI_SEARCH_API_KEY` from the inherited process environment.
 `.pi/web-surfer/config.json` selects behavior, not credentials. The native
 model-provider variable `GEMINI_API_KEY` is not a search fallback.
 
-`web_fetch` requires exactly one ready, compatible pi-markdown-datastore
-ownership-policy service, including for plain URL fetches and local-file reads
-without `saveTo`: it must validate protected artifact placement. Missing policy
-availability fails closed; `web_search` does not require that service. This is a
-policy-service dependency, not a requirement for fresh search indexes.
+`web_fetch` uses a ready pi-markdown-datastore policy service when one is
+discovered, including to keep cache placement out of configured stores.
+Standalone use does not require it. A not-ready or incompatible reply blocks
+affected fetch and export rather than being treated as absence. `web_search`
+does not require that service. This is a policy-service check, not a requirement
+for fresh search indexes.
 
 See [design](docs/design.md) for the contract and [setup](docs/setup.md) for
 installation. Pi supplies host peers; do not load the extension twice.
@@ -69,7 +70,7 @@ package; the environment does not.
   hour after creation; reads do not renew it, and temporary-file cleanup may
   remove it sooner. Save converted text for durable reuse. For an unavailable
   handle, deliberately reacquire the source rather than guessing a replacement ID.
-- `saveTo` creates a new project-relative file without overwriting or indexing.
+- `saveTo` creates a new file under the configured downloads directory, accepting relative or contained absolute paths, without overwriting or indexing.
   An initial fetch/conversion saves the original bytes. Paging a chosen artifact
   saves that artifact's bytes, so use the original ID with `mode: raw` to save
   the original, or the converted ID to save Markdown.
@@ -88,8 +89,8 @@ Then pin the returned **converted** `artifactId`, not its `sourceArtifactId`:
 {"artifactId":"RETURNED_CONVERTED_ID","view":"artifact","saveTo":"sources/report.md"}
 ```
 
-Use `report.docx` the same way. `saveTo` is relative to the project cwd, not a
-previous shell `cd`; absolute destinations are rejected. Successful metadata-only
+Use `report.docx` the same way. `saveTo` is relative to the configured downloads
+directory, or an absolute path inside it. Successful metadata-only
 saves report the path, saved byte kind (original or converted), and byte count.
 Keep the source identity/hash and provenance with durable text when needed.
 
@@ -171,8 +172,8 @@ files; completed originals remain available.
 
 HTTP uses native Node fetch, manual redirects and the minimal Undici checked-DNS
 connector in deny mode. No custom HTTP/search timeouts are added. Datastore
-policy-v1 must be ready for cache/save publication; absence is not empty scope.
-Search remains independently usable. A supplied Gemini key never triggers an
+policy-v1 is used when a ready companion answers; no reply is standalone, not
+empty ownership. Search remains independently usable. A supplied Gemini key never triggers an
 error-based backend switch; only key absence selects DuckDuckGo automatically.
 
 Artifacts live under `$TMPDIR/web-surfer/<project>/<request>/`, outside project

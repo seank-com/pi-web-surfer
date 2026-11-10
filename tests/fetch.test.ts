@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DEFAULT_CONFIG, type WebSurferConfig } from "../src/config.ts";
@@ -363,7 +363,7 @@ test("saveTo copies the stored source bytes and never overwrites", async (t) => 
 	assert.equal(result.details.ok, true);
 	// savedPath is reported project-relative; verify the bytes on disk.
 	assert.equal(result.details.savedPath, path.join("out", "page.html"));
-	assert.equal(readFileSync(path.join(dir, "out", "page.html"), "utf8"), PAGE_HTML);
+	assert.equal(readFileSync(path.join(dir, "downloads", "out", "page.html"), "utf8"), PAGE_HTML);
 
 	// The artifact is a copy source: it must still serve pages after saving.
 	const paged = await executeFetch({ artifactId: result.details.artifactId!, offset: 0 }, env);
@@ -374,7 +374,7 @@ test("saveTo copies the stored source bytes and never overwrites", async (t) => 
 	const again = await executeFetch({ url: `${server.baseUrl}/page.html`, saveTo: "out/page.html" }, env);
 	assert.equal(again.details.ok, true);
 	assert.ok(again.details.warnings?.some((w) => w.code === "destination_blocked"));
-	assert.equal(readFileSync(path.join(dir, "out", "page.html"), "utf8"), PAGE_HTML);
+	assert.equal(readFileSync(path.join(dir, "downloads", "out", "page.html"), "utf8"), PAGE_HTML);
 });
 
 test("saveTo refuses protected, foreign, and unresolvable destinations", async (t) => {
@@ -394,20 +394,21 @@ test("saveTo refuses protected, foreign, and unresolvable destinations", async (
 		assert.ok(details.warnings?.some((w) => w.code === "destination_blocked"));
 	};
 
-	const intoStore = await executeFetch(
-		{ url, saveTo: "notes/stored.html" },
-		makeEnv(dir, { boundary: { available: true, roots: [store] } }),
-	);
+	const projectRooted = makeEnv(dir, {
+		config: { config: structuredClone(DEFAULT_CONFIG), resolvedDownloadsDir: dir },
+		boundary: { available: true, mode: "ready", roots: [store] },
+	});
+	const intoStore = await executeFetch({ url, saveTo: "notes/stored.html" }, projectRooted);
 	blocked(intoStore.details);
 	assert.equal(existsSync(path.join(dir, "notes", "stored.html")), false);
 
-	const intoConfig = await executeFetch({ url, saveTo: ".pi/web-surfer/inner.txt" }, makeEnv(dir));
+	const intoConfig = await executeFetch({ url, saveTo: ".pi/web-surfer/inner.txt" }, projectRooted);
 	blocked(intoConfig.details);
 	assert.equal(existsSync(path.join(dir, ".pi", "web-surfer", "inner.txt")), false);
 
 	const outside = await executeFetch({ url, saveTo: "../outside.html" }, makeEnv(dir));
 	blocked(outside.details);
-	assert.equal(existsSync(path.resolve(dir, "..", "outside.html")), false);
+	assert.equal(existsSync(path.join(dir, "outside.html")), false);
 
 	const noBoundary = await executeFetch(
 		{ url, saveTo: "out/p2.html" },
@@ -415,7 +416,31 @@ test("saveTo refuses protected, foreign, and unresolvable destinations", async (
 	);
 	assert.equal(noBoundary.details.ok,false,'unverified cache ownership blocks publication too');
 	assert.equal(noBoundary.details.code,'destination_blocked');
-	assert.equal(existsSync(path.join(dir, "out", "p2.html")), false);
+	assert.equal(existsSync(path.join(dir, "downloads", "out", "p2.html")), false);
+});
+
+test("relative and contained absolute saveTo reach the same downloads destination", async (t) => {
+	const server = await startFixtureServer();
+	const { dir, cleanup } = projectDir();
+	const external = mkdtempSync(path.join(tmpdir(), "ws-dl-"));
+	t.after(async () => {
+		await server.close();
+		cleanup();
+		rmSync(external, { recursive: true, force: true });
+	});
+	const env = makeEnv(dir, { config: { config: structuredClone(DEFAULT_CONFIG), resolvedDownloadsDir: external } });
+	const relative = await executeFetch({ url: `${server.baseUrl}/page.html`, saveTo: "nested/page.html" }, env);
+	const absoluteTarget = path.join(external, "nested", "other.html");
+	const absolute = await executeFetch({ url: `${server.baseUrl}/page.html`, saveTo: absoluteTarget }, env);
+	assert.equal(relative.details.ok, true);
+	assert.equal(absolute.details.ok, true);
+	assert.equal(readFileSync(path.join(external, "nested", "page.html"), "utf8"), PAGE_HTML);
+	assert.equal(readFileSync(absoluteTarget, "utf8"), PAGE_HTML);
+	const link = path.join(external, "escape");
+	symlinkSync(dir, link);
+	const viaLink = await executeFetch({ url: `${server.baseUrl}/page.html`, saveTo: "escape/out.html" }, env);
+	assert.ok(viaLink.details.warnings?.some((w) => w.code === "destination_blocked"));
+	assert.equal(existsSync(path.join(dir, "out.html")), false);
 });
 
 test("local path reads extract with no network and report the path", async (t) => {
@@ -528,7 +553,7 @@ test("auto search falls back to DuckDuckGo with the loud warning", async (t) => 
 	assert.ok(outcome.text.includes(FALLBACK_WARNING));
 });
 
-test("session boundary discovery resolves roots, and fails closed when configured but silent", async (t) => {
+test("session boundary discovery is optional when absent and blocks incompatible replies", async (t) => {
 	const { dir, cleanup } = projectDir();
 	t.after(() => cleanup());
 
@@ -552,24 +577,44 @@ test("session boundary discovery resolves roots, and fails closed when configure
 		},
 	};
 	const withResponder = await createSessionState({ cwd: dir, events: respondingBus });
+	assert.equal(withResponder.boundary.mode, "ready");
 	assert.equal(withResponder.boundary.available, true);
 	await withResponder.boundary.validate!(path.join(dir,'new.txt'));
 
-	// Datastore configured but nobody answers: fail closed.
-	mkdirSync(path.join(dir, ".pi", "markdown-datastore"), { recursive: true, mode: 0o700 });
-	writeFileSync(
-		path.join(dir, ".pi", "markdown-datastore", "config.json"),
-		"{}",
-		{ mode: 0o600 },
-	);
 	const silentBus: EventBusLike = { emit: () => {}, on: () => () => {} };
-	const failClosed = await createSessionState({ cwd: dir, events: silentBus });
-	assert.equal(failClosed.boundary.available, false);
+	const absent = await createSessionState({ cwd: dir, events: silentBus });
+	assert.equal(absent.boundary.mode, "absent");
+	assert.equal(absent.boundary.warning, undefined);
+	assert.equal(absent.config.resolvedDownloadsDir, path.join(dir, "downloads"));
+	assert.equal(existsSync(path.join(dir, "downloads")), true);
 
-	// Missing responders cannot prove an authoritative empty ownership set.
-	const clean = projectDir();
-	t.after(() => clean.cleanup());
-	const noDatastore = await createSessionState({ cwd: clean.dir, events: silentBus });
-	assert.equal(noDatastore.boundary.available, false);
-	assert.deepEqual(noDatastore.boundary.roots, []);
+	const incompatibleBus: EventBusLike = {
+		emit(type, data) {
+			if (type !== CAPABILITY_REQUEST) return;
+			const req = data as { requestId: string };
+			replyHandler?.({ version: 1, requestId: req.requestId, capability: { version: 1 } });
+		},
+		on(type, handler) {
+			if (type === CAPABILITY_REPLY) replyHandler = handler;
+			return () => { replyHandler = undefined; };
+		},
+	};
+	const incompatible = await createSessionState({ cwd: dir, events: incompatibleBus });
+	assert.equal(incompatible.boundary.mode, "incompatible");
+	assert.match(incompatible.boundary.warning ?? "", /incompatible/);
+
+	const unreadyBus: EventBusLike = {
+		emit(type, data) {
+			if (type !== CAPABILITY_REQUEST) return;
+			const req = data as { requestId: string };
+			replyHandler?.({ version: 1, requestId: req.requestId, capability: { version: 1, contractVersion: 1, ready: false, stores: [], policyVersion: 1, instanceId: "gap" } });
+		},
+		on(type, handler) {
+			if (type === CAPABILITY_REPLY) replyHandler = handler;
+			return () => { replyHandler = undefined; };
+		},
+	};
+	const unclassified = await createSessionState({ cwd: dir, events: unreadyBus });
+	assert.equal(unclassified.boundary.mode, "unclassified");
+	assert.match(unclassified.boundary.warning ?? "", /does not distinguish/);
 });

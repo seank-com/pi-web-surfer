@@ -7,18 +7,25 @@ keyless DuckDuckGo fallback. This document is the product contract the package
 implements.
 
 Cache placement and `saveTo` use the active pi-markdown-datastore public v1
-ownership API. Missing, unready, incompatible or ambiguous policy discovery is
-not proof of an empty root set: publication fails closed. Search remains usable
-without that service. See [datastore ownership](#saveto-and-datastore-ownership).
+ownership API when that service is installed, configured, and ready. A missing
+companion is ordinary standalone operation, not an error. A ready policy-v1
+service rejects destinations it owns. An incompatible reply, or a well-formed
+reply that is not ready, blocks export and artifact publication until corrected.
+The public capability reply does not distinguish an unconfigured companion from
+a configured companion that failed to start; that unclassified reply is not
+treated as absence. Search remains usable without the service. See
+[datastore ownership](#saveto-and-datastore-ownership).
 
 ## Purpose and scope
 
-`web_fetch` requires exactly one ready, compatible pi-markdown-datastore public
-ownership-policy service. This hard dependency applies even to plain URL fetches
-and local-file reads without `saveTo`, because protected artifact placement must
-be validated. Missing, unready, incompatible or ambiguous policy discovery fails
-closed; `web_search` does not require that service. Policy-service availability
-is distinct from search-index freshness or semantic-search readiness.
+`web_fetch` uses a ready, compatible pi-markdown-datastore public
+ownership-policy service when one answers discovery. It does not require that
+service for standalone fetches, local-file reads, or exports. Artifact placement
+is still checked against a ready service so a configured store cannot receive
+an unvalidated cache or export. Incompatible or not-ready replies block affected
+fetch and export work before it starts; `web_search` does not require that
+service. Policy-service availability is distinct from search-index freshness or
+semantic-search readiness.
 
 `web_search` discovers sources; `web_fetch` retrieves and verifies them. Fetch
 stores the response outside model context and serves bounded pages without
@@ -116,9 +123,18 @@ visible. Configuration is loaded as a complete document, not partially applied.
     "chunkBytes": 51200,
     "maxRedirects": 5,
     "privateNetworks": "allow"
-  }
+  },
+  "downloadsDir": "/absolute/or/~/relative/downloads"
 }
 ```
+
+`downloadsDir` is the export root. When the key is absent, startup persists
+`<project>/downloads` and creates that directory. An explicit value, including a
+home-relative path such as `~/Downloads/example`, is preserved. Missing download
+directories are created during startup and must be accessible. A malformed or
+unreadable configuration is not overwritten with this default. Failure to create
+or access the directory is reported at startup; later `web_fetch` calls return
+that error and `web_search` stays usable.
 
 `backend` is `auto`, `gemini`, or `duckduckgo`. An explicit Gemini selection
 without a usable key fails rather than overriding the operator's selection.
@@ -154,7 +170,7 @@ retry loops, cache quotas, or performance gates are implied by this document.
 | `maxBodyBytes` | Per-call external-response cap; does not limit internal inputs |
 | `artifactId` | Optional returned reference pinning an existing response; expires one hour after creation, without read renewal. Save converted text for durable reuse. |
 | `refresh` | Explicit new fetch, default false |
-| `saveTo` | Optional new project-relative destination for the selected source bytes |
+| `saveTo` | Optional destination under the configured downloads directory. Relative paths resolve there; absolute paths are accepted only when they resolve inside it |
 | `operation` | `convert` explicitly invokes local conversion; `zip-list` only enumerates archive metadata |
 | `memberIndex` | With `convert`, explicitly decompress/convert this zero-based ZIP entry only |
 | `view` | `page` (default), or `artifact` for identity/provenance without inline source text |
@@ -334,11 +350,16 @@ must demonstrate the chosen supported concurrency behavior in disposable tests.
 
 ### saveTo and datastore ownership
 
-`saveTo` is a real local write, not a read-only operation. The destination stays
-inside the project and outside configured datastore roots, not merely outside
-today's include globs. It also stays outside the project's protected
-configuration directory (`CONFIG_DIR_NAME`), which holds only durable state;
-`saveTo` failures must not require a configuration rollback. Cache/save operations do not index or promote web bodies into memory. Saving never modifies Pi sessions or transport journals.
+`saveTo` is a real local write, not a read-only operation. Relative and absolute
+destinations are both accepted when the resolved path stays inside the effective
+`downloadsDir`. That root may be outside the project directory. The destination
+also stays outside configured datastore roots, not merely outside today's include
+globs, and outside the project's protected configuration directory
+(`CONFIG_DIR_NAME`). Symlink traversal and overwrite remain refused. This is an
+export contract, not a filesystem sandbox: local inputs may be read from any
+path the process can read, and internal artifacts stay in the temporary
+namespace. Cache/save operations do not index or promote web bodies into memory.
+Saving never modifies Pi sessions or transport journals.
 
 **Publication:** create a new destination without overwriting an
 existing file; refuse symlink traversal and hard-link promotion; recheck the
@@ -346,26 +367,38 @@ approved destination boundary at publication. Copy source bytes to the new
 file and preserve the cached response so its paging reference remains usable.
 An initial fetch/conversion's save writes the original bytes; saving a pinned
 converted artifact writes its Markdown bytes. Return both artifact reference and
-saved path. Metadata-only successful saves also state the project-relative saved
+saved path. Metadata-only successful saves also state the supplied saved
 path, byte kind (original source, converted/derived artifact, or selected ZIP
 member), and exact saved byte count in model-facing text. A failed save must not destroy
 the downloaded evidence or masquerade as a successful save.
 
 **Datastore boundary:** the datastore-owned root/policy-validation API is the
-boundary for both cache placement and save publication. The datastore's public
-discovery reports readiness and store names, not authoritative root paths, and
-its model-facing status roots are redacted. web-surfer calls the API —
-authoritative root enumeration plus destination validation, owned by
-pi-markdown-datastore — at operation time and again at publication, and does
-not infer roots from configuration files, copy the datastore's private loader
-or containment algorithms, or treat a guessed config instance as proof. When a
-policy responder is absent or unready, cache and save publication fail closed.
-Discovery is synchronous and requires exactly one ready policy-v1 instance;
-requests bind to that instance. Each operation and publication rechecks public
-roots and destination ownership. The existing datastore RPC lifetime is used,
-without a consumer discovery timer. No configuration-file absence is treated as
-ownership evidence. Effective configuration changes at service/session replacement
+boundary for cache placement and save publication when a companion is present.
+The datastore's public discovery reports readiness and store names, not
+authoritative root paths, and its model-facing status roots are redacted.
+web-surfer calls the API — authoritative root enumeration plus destination
+validation, owned by pi-markdown-datastore — at operation time and again at
+publication. It does not infer roots from configuration files, copy the
+datastore's private loader or containment algorithms, or treat a guessed config
+instance as proof.
+
+| Discovery | Behavior |
+| --- | --- |
+| No reply | Standalone. No missing-integration warning. Exports and cache placement proceed under the downloads and local protections. |
+| One ready policy-v1 reply | Bind to that instance. Reject owned destinations. Recheck at publication. |
+| Malformed, duplicate, or ready-without-policy reply | Incompatible. Warn at startup. Do not start affected fetch or export work. |
+| One well-formed reply with `ready: false` | Unclassified. The public contract cannot tell unconfigured from configured-but-failed. Do not label it absence. Withhold exports and artifact publication and report the API gap. |
+
+A protection check that fails after a ready startup does not publish an
+unvalidated artifact or export. Discovery is synchronous. Requests bind to the
+ready instance. The existing datastore RPC lifetime is used, without a consumer
+discovery timer. Effective configuration changes at service/session replacement
 are observed by fresh discovery; this package adds no live configuration watcher.
+
+The unclassified row is an owning-component gap in pi-markdown-datastore: its
+capability reply needs a public distinction such as configuration missing versus
+a configured startup error code. This package does not read that companion's
+private configuration to invent the distinction.
 
 ### Output
 
@@ -547,3 +580,16 @@ No historical monorepo pass/fail counts, skip counts, timing assertions, or
 performance gates become this package's baseline. The tests establish
 source/packed loading and packaging plus the fetch/search stack against local
 HTTP fixtures.
+
+## Restrictions register
+
+| Restriction | Why (what failure does it prevent) |
+| --- | --- |
+| `downloadsDir` export root, default `<project>/downloads`, created at startup | Prevents user-facing exports from landing in the project working directory. Approved by issues #8 and #5. Implemented in `src/config.ts` and `src/fetchcore.ts`. |
+| Relative and contained-absolute `saveTo` only; symlink traversal and overwrite refused; protected config directory refused | Prevents export escape and clobbering durable configuration. Approved by issue #8, retaining the earlier symlink, no-overwrite, and config-path rules. |
+| Ready policy-v1 datastore ownership checked before fetch work and again at publication; absent companion does not block; incompatible and unclassified replies block affected fetch/export | Prevents unvalidated writes into configured stores without making standalone use fail closed. Approved by issue #5, except the unclassified row, which is an unapproved datastore API gap recorded above rather than a new policy. |
+| External response cap default 1 MiB, ceiling 64 MiB; page budget default 51,200, ceiling 256,000; redirects default 5; search results 1-10; search text 51,200 bytes; artifact retention 1 hour; template depth 3 | Existing product bounds in this document. Owner approval for retaining each numeric bound is not restated in issues #5 or #8. Flagged, not changed. |
+| Policy RPC envelope `deadline` of 15 minutes | Required field of the datastore public RPC. Enforcement belongs to that service. This package adds no timer. Approval of the value is the datastore contract, not a new web-surfer limit. |
+| Config file mode 0600 and directory mode 0700 | Existing owner-only configuration discipline. Not changed by #5 or #8. Explicit approval for the modes is not in those issues. |
+
+No new timeout, retry, concurrency limit, or fallback export location is added by this contract.

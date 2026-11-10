@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
 	CONFIG_SCHEMA_VERSION,
 	DEFAULT_CONFIG,
 	findDuplicateKeys,
+	initializeDownloads,
 	loadConfig,
 	writeConfigFixture,
 } from "../src/config.ts";
@@ -168,6 +169,54 @@ test("symlinked config is rejected (unsafe file type)", () => {
 		symlinkSync(path.join(outside, "config.json"), path.join(cfgDir, "config.json"));
 		assert.match(loadConfig(dir).invalid ?? "", /must not be a symlink/);
 		rmSync(outside, { recursive: true, force: true });
+	} finally {
+		cleanup();
+	}
+});
+
+test("absent downloadsDir is persisted and the directory is created", () => {
+	const { dir, cleanup } = project();
+	try {
+		writeConfigFixture(dir, { schemaVersion: CONFIG_SCHEMA_VERSION, search: { backend: "duckduckgo" } });
+		const result = initializeDownloads(dir);
+		assert.equal(result.invalid, undefined);
+		assert.equal(result.exportError, undefined);
+		assert.equal(result.resolvedDownloadsDir, path.join(dir, "downloads"));
+		const saved = JSON.parse(readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8"));
+		assert.equal(saved.search.backend, "duckduckgo");
+		assert.equal(saved.downloadsDir, path.join(dir, "downloads"));
+		assert.equal(lstatSync(path.join(dir, "downloads")).isDirectory(), true);
+	} finally {
+		cleanup();
+	}
+});
+
+test("an explicit downloadsDir is not replaced", () => {
+	const { dir, cleanup } = project();
+	const home = mkdtempSync(path.join(tmpdir(), "ws-home-"));
+	const previous = process.env.HOME;
+	process.env.HOME = home;
+	try {
+		writeConfigFixture(dir, { downloadsDir: "~/sister-downloads" });
+		const result = initializeDownloads(dir);
+		assert.equal(result.resolvedDownloadsDir, path.join(home, "sister-downloads"));
+		assert.equal(JSON.parse(readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8")).downloadsDir, "~/sister-downloads");
+	} finally {
+		if (previous === undefined) delete process.env.HOME;
+		else process.env.HOME = previous;
+		rmSync(home, { recursive: true, force: true });
+		cleanup();
+	}
+});
+
+test("malformed config is not overwritten with a downloads default", () => {
+	const { dir, cleanup } = project();
+	try {
+		writeConfigFixture(dir, { bogus: true });
+		const before = readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8");
+		const result = initializeDownloads(dir);
+		assert.match(result.invalid ?? "", /unknown config keys/);
+		assert.equal(readFileSync(path.join(dir, ".pi", "web-surfer", "config.json"), "utf8"), before);
 	} finally {
 		cleanup();
 	}

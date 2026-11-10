@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,6 +25,8 @@ export interface FetchConfig {
 export interface WebSurferConfig {
 	search: SearchConfig;
 	fetch: FetchConfig;
+	/** Configured downloads directory spelling, including home-relative paths. */
+	downloadsDir?: string;
 }
 
 export const CONFIG_SCHEMA_VERSION = 1;
@@ -48,6 +50,10 @@ export interface ConfigLoadResult {
 	config?: WebSurferConfig;
 	/** Set when the config file exists but is invalid; network ops disabled. */
 	invalid?: string;
+	/** Resolved downloads directory after ordinary startup initialization. */
+	resolvedDownloadsDir?: string;
+	/** Downloads directory could not be created or accessed. Fetch/export stays blocked; search does not. */
+	exportError?: string;
 }
 
 export function configDirectory(cwd: string, configDirName = ".pi"): string {
@@ -123,7 +129,7 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 		return { invalid: "config root must be a JSON object" };
 	}
 	const root = doc as Record<string, unknown>;
-	const unknownRoot = Object.keys(root).filter((k) => k !== "schemaVersion" && k !== "search" && k !== "fetch");
+	const unknownRoot = Object.keys(root).filter((k) => k !== "schemaVersion" && k !== "search" && k !== "fetch" && k !== "downloadsDir");
 	if (unknownRoot.length > 0) return { invalid: `unknown config keys: ${unknownRoot.join(", ")}` };
 	if (root.schemaVersion !== undefined && root.schemaVersion !== CONFIG_SCHEMA_VERSION) {
 		return { invalid: `unsupported schemaVersion: ${String(root.schemaVersion)}` };
@@ -139,7 +145,90 @@ export function loadConfig(cwd: string, configDirName = ".pi"): ConfigLoadResult
 		const problem = validateFetch(root.fetch, result.config!.fetch);
 		if (problem) return { invalid: problem };
 	}
+	if (root.downloadsDir !== undefined) {
+		if (typeof root.downloadsDir !== "string" || root.downloadsDir.length === 0) {
+			return { invalid: "downloadsDir: must be a non-empty path" };
+		}
+		result.config!.downloadsDir = root.downloadsDir;
+	}
 	return result;
+}
+
+export function defaultDownloadsDir(cwd: string): string {
+	return path.join(cwd, "downloads");
+}
+
+/** Resolve a configured path. Home-relative spellings use the process home directory. */
+export function resolveConfiguredPath(value: string, cwd: string): string {
+	if (value === "~" || value.startsWith("~/")) return path.resolve(path.join(os.homedir(), value.slice(1)));
+	return path.resolve(cwd, value);
+}
+
+/**
+ * Ordinary startup: create missing config/download directories, persist an
+ * absent downloadsDir as <project>/downloads, and check that the effective
+ * directory can be accessed. Malformed config is not overwritten.
+ */
+export function initializeDownloads(cwd: string, configDirName = ".pi"): ConfigLoadResult {
+	const loaded = loadConfig(cwd, configDirName);
+	if (loaded.invalid || !loaded.config) return loaded;
+	const file = configPath(cwd, configDirName);
+	let exists = true;
+	try {
+		lstatSync(file);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			return { invalid: "config file cannot be inspected" };
+		}
+		exists = false;
+	}
+	if (!exists || loaded.config.downloadsDir === undefined) {
+		const spelling = defaultDownloadsDir(cwd);
+		try {
+			persistDownloadsDir(cwd, configDirName, spelling, exists);
+		} catch (error) {
+			return { ...loaded, exportError: `downloads configuration could not be written: ${errMessage(error)}` };
+		}
+		loaded.config.downloadsDir = spelling;
+	}
+	const resolved = resolveConfiguredPath(loaded.config.downloadsDir!, cwd);
+	loaded.resolvedDownloadsDir = resolved;
+	try {
+		if (existsSyncSafe(resolved) && lstatSync(resolved).isSymbolicLink()) {
+			return { ...loaded, exportError: `downloads directory must not be a symlink: ${resolved}` };
+		}
+		mkdirSync(resolved, { recursive: true, mode: 0o700 });
+		if (lstatSync(resolved).isSymbolicLink() || !lstatSync(resolved).isDirectory()) {
+			return { ...loaded, exportError: `downloads path is not a directory: ${resolved}` };
+		}
+		accessSync(resolved, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
+	} catch (error) {
+		return { ...loaded, exportError: `downloads directory is not accessible: ${resolved} (${errMessage(error)})` };
+	}
+	return loaded;
+}
+
+function existsSyncSafe(target: string): boolean {
+	try {
+		lstatSync(target);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function persistDownloadsDir(cwd: string, configDirName: string, spelling: string, fileExists: boolean): void {
+	const dir = configDirectory(cwd, configDirName);
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const file = path.join(dir, "config.json");
+	let doc: Record<string, unknown>;
+	if (fileExists) {
+		doc = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+		doc.downloadsDir = spelling;
+	} else {
+		doc = { schemaVersion: CONFIG_SCHEMA_VERSION, ...structuredClone(DEFAULT_CONFIG), downloadsDir: spelling };
+	}
+	writeFileSync(file, JSON.stringify(doc, null, 2) + "\n", { mode: 0o600 });
 }
 
 function validateSearch(input: unknown, out: SearchConfig): string | undefined {
