@@ -17,7 +17,7 @@ const events={
  on(type:string,handler:any){const set=listeners.get(type)??new Set();set.add(handler);listeners.set(type,set);return()=>set.delete(handler);},
  emit(type:string,data:any){for(const handler of listeners.get(type)??[])handler(data);}
 };
-events.on('pi-markdown-datastore:v1:capability-request',(request:any)=>events.emit('pi-markdown-datastore:v1:capability-reply',{requestId:request.requestId,capability:{version:1,contractVersion:1,ready:true,policyVersion:1,instanceId:'receipt-fixture'}}));
+events.on('pi-markdown-datastore:v1:capability-request',(request:any)=>events.emit('pi-markdown-datastore:v1:capability-reply',{requestId:request.requestId,capability:{version:1,contractVersion:1,ready:true,stores:[],policyVersion:1,instanceId:'receipt-fixture'}}));
 events.on('pi-markdown-datastore:v1:request',(request:any)=>request.resolve({contractVersion:1,operation:request.request.operation,data:request.request.operation==='roots'?{roots:[]}:{path:request.request.input.path,owned:false}}));
 try{
  const entry=process.env.WEB_SURFER_ENTRY??new URL('../../src/index.ts',import.meta.url).href;

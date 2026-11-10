@@ -5,13 +5,8 @@ export const CAPABILITY_REQUEST = "pi-markdown-datastore:v1:capability-request";
 export const CAPABILITY_REPLY = "pi-markdown-datastore:v1:capability-reply";
 export const POLICY_REQUEST = "pi-markdown-datastore:v1:request";
 
-/**
- * Public discovery cannot distinguish an installed-but-unconfigured companion
- * from a configured companion that failed to become ready. Both are a single
- * well-formed reply with ready:false. That state is `unclassified`, not absence
- * and not a confirmed configuration failure. See docs/design.md.
- */
-export type ProtectionMode = "absent" | "ready" | "incompatible" | "unclassified";
+/** Absent companion, ready protection, or a reply that cannot be used. */
+export type ProtectionMode = "absent" | "ready" | "incompatible";
 
 export interface EventBusLike {
 	emit(type: string, data: unknown): void;
@@ -25,12 +20,15 @@ export interface DatastoreBoundary {
 	reason?: string;
 	warning?: string;
 	validate?: (absolute: string, signal?: AbortSignal) => Promise<void>;
+	/** Fresh public discovery. Call after companion session_start, and again before publication. */
+	inspect?: () => Promise<{ mode: ProtectionMode; warning?: string }>;
 }
 
 interface Classification {
 	mode: ProtectionMode;
 	instanceId?: string;
 	warning?: string;
+	needsPolicyError?: boolean;
 }
 
 function classifyReplies(replies: any[]): Classification {
@@ -43,8 +41,11 @@ function classifyReplies(replies: any[]): Classification {
 		};
 	}
 	const c = replies[0]?.capability;
-	const storesOk = c?.stores === undefined || Array.isArray(c.stores);
-	const wellFormed = c?.version === 1 && c.contractVersion === 1 && typeof c.ready === "boolean" && storesOk;
+	const wellFormed =
+		c?.version === 1 &&
+		c.contractVersion === 1 &&
+		typeof c.ready === "boolean" &&
+		Array.isArray(c.stores);
 	if (!wellFormed) {
 		return {
 			mode: "incompatible",
@@ -52,20 +53,13 @@ function classifyReplies(replies: any[]): Classification {
 				"Datastore policy discovery returned an incompatible reply. Exports are blocked until the companion contract is corrected.",
 		};
 	}
-	if (c.ready && c.policyVersion === 1 && typeof c.instanceId === "string" && c.instanceId.length > 0) {
-		return { mode: "ready", instanceId: c.instanceId };
-	}
-	if (c.ready) {
-		return {
-			mode: "incompatible",
-			warning:
-				"Datastore policy discovery is ready but does not offer policy contract version 1. Exports are blocked until that contract is available.",
-		};
+	if (c.policyVersion === 1 && typeof c.instanceId === "string" && c.instanceId.length > 0) {
+		return { mode: c.ready ? "ready" : "absent", instanceId: c.instanceId, needsPolicyError: !c.ready };
 	}
 	return {
-		mode: "unclassified",
+		mode: "incompatible",
 		warning:
-			"Datastore companion replied but is not ready. The public capability contract does not distinguish an unconfigured companion from a configured one that failed, so exports are withheld rather than treated as optional absence. pi-markdown-datastore needs a public state for CONFIG_MISSING versus configured failure.",
+			"Datastore policy discovery does not offer policy contract version 1. Exports are blocked until that contract is available.",
 	};
 }
 
@@ -121,24 +115,54 @@ export function discoverDatastoreBoundary(
 				finish(error);
 			}
 		});
+	const policyCode = (error: unknown): string | undefined =>
+		error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
+	const inspect = async (): Promise<{ mode: ProtectionMode; warning?: string }> => {
+		const found = classify();
+		if (!found.needsPolicyError || !found.instanceId) return { mode: found.mode, warning: found.warning };
+		try {
+			await request(found.instanceId, "roots", {});
+			return {
+				mode: "incompatible",
+				warning: "Datastore policy replied ready:false but roots succeeded. Exports are blocked until that contradiction is corrected.",
+			};
+		} catch (error) {
+			const code = policyCode(error);
+			if (code === "CONFIG_MISSING") return { mode: "absent" };
+			const shown = code ?? "unavailable";
+			return {
+				mode: "incompatible",
+				warning: `Datastore protection failed (${shown}). Exports are blocked until that configuration is corrected.`,
+			};
+		}
+	};
 	return {
-		get mode() {
-			return classify().mode;
-		},
-		get available() {
-			return classify().mode === "ready";
-		},
-		get warning() {
-			return classify().warning;
-		},
 		roots: [],
+		inspect,
+		get available() {
+			return false;
+		},
 		async validate(absolute, signal) {
-			const found = classify();
+			const found = await inspect();
 			if (found.mode === "absent") return;
-			if (found.mode !== "ready" || !found.instanceId) throw new Error(found.warning ?? "Datastore policy unavailable");
-			const roots = await request(found.instanceId, "roots", {}, signal);
+			if (found.mode !== "ready") throw new Error(found.warning ?? "Datastore policy unavailable");
+			const current = classify();
+			if (!current.instanceId) throw new Error("Datastore policy instance is no longer available");
+			let roots: any;
+			try {
+				roots = await request(current.instanceId, "roots", {}, signal);
+			} catch (error) {
+				if (policyCode(error) === "CONFIG_MISSING") return;
+				throw new Error(`Datastore protection failed (${policyCode(error) ?? "unavailable"}).`);
+			}
 			if (!Array.isArray(roots?.roots)) throw new Error("Invalid datastore roots response");
-			const destination = await request(found.instanceId, "validateDestination", { path: absolute }, signal);
+			let destination: any;
+			try {
+				destination = await request(current.instanceId, "validateDestination", { path: absolute }, signal);
+			} catch (error) {
+				if (policyCode(error) === "CONFIG_MISSING") return;
+				throw new Error(`Datastore protection failed (${policyCode(error) ?? "unavailable"}).`);
+			}
 			if (destination?.path !== absolute || typeof destination.owned !== "boolean")
 				throw new Error("Invalid datastore destination response");
 			if (destination.owned) throw new Error("Destination belongs to a datastore");
@@ -160,6 +184,11 @@ export async function validateBoundary(
 ): Promise<void> {
 	try {
 		signal?.throwIfAborted();
+		if (boundary.inspect) {
+			await boundary.validate?.(absolute, signal);
+			signal?.throwIfAborted();
+			return;
+		}
 		const mode = protectionMode(boundary);
 		if (mode === "absent") return;
 		if (mode !== "ready") throw new Error(boundary.warning ?? boundary.reason ?? "Datastore policy unavailable");
@@ -191,8 +220,8 @@ export function checkDestination(opts: {
 	if (!inside(opts.absolute, opts.downloadsRoot)) return denied("destination is outside the downloads directory");
 	if (inside(opts.absolute, opts.configDir))
 		return denied("destination is inside the protected configuration directory");
-	const mode = protectionMode(opts.boundary);
-	if (mode !== "absent" && mode !== "ready") {
+	const mode = opts.boundary.inspect ? undefined : protectionMode(opts.boundary);
+	if (mode && mode !== "absent" && mode !== "ready") {
 		return denied(opts.boundary.warning ?? opts.boundary.reason ?? "datastore protection is not usable");
 	}
 	if (mode === "ready" && opts.boundary.roots.some((root) => inside(opts.absolute, root)))

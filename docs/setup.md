@@ -165,8 +165,9 @@ served when the refusal is only a destination check; a known protection or
 downloads failure is returned before the fetch). It does not author a datastore
 note or trigger indexing. The datastore-root boundary is checked through the
 public policy-v1 API when a ready companion answers. No reply means standalone
-operation. An incompatible or not-ready reply blocks affected fetch and export
-and is not described as a missing companion. Load the datastore extension once
+operation. A not-ready policy reply whose public `roots` call returns
+`CONFIG_MISSING` is also standalone. Any other policy error blocks affected
+fetch and export and is not described as a missing companion. Load the datastore extension once
 with a valid protected configuration when integration is wanted, then start the
 disposable session. Both extension load orders are supported; no guessed
 config-file boundary or copied datastore containment code is used.

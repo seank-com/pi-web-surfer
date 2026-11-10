@@ -13,8 +13,9 @@ model-provider variable `GEMINI_API_KEY` is not a search fallback.
 
 `web_fetch` uses a ready pi-markdown-datastore policy service when one is
 discovered, including to keep cache placement out of configured stores.
-Standalone use does not require it. A not-ready or incompatible reply blocks
-affected fetch and export rather than being treated as absence. `web_search`
+Standalone use does not require it. A public roots error of CONFIG_MISSING is
+unconfigured standalone use. Any other not-ready or incompatible policy error
+blocks affected fetch and export rather than being treated as absence. `web_search`
 does not require that service. This is a policy-service check, not a requirement
 for fresh search indexes.
 
@@ -172,8 +173,9 @@ files; completed originals remain available.
 
 HTTP uses native Node fetch, manual redirects and the minimal Undici checked-DNS
 connector in deny mode. No custom HTTP/search timeouts are added. Datastore
-policy-v1 is used when a ready companion answers; no reply is standalone, not
-empty ownership. Search remains independently usable. A supplied Gemini key never triggers an
+policy-v1 is used when a ready companion answers. No reply, and a not-ready
+reply whose roots call returns CONFIG_MISSING, are standalone, not empty
+ownership. Other policy errors block export. Search remains independently usable. A supplied Gemini key never triggers an
 error-based backend switch; only key absence selects DuckDuckGo automatically.
 
 Artifacts live under `$TMPDIR/web-surfer/<project>/<request>/`, outside project

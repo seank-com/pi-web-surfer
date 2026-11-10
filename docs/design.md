@@ -11,9 +11,9 @@ ownership API when that service is installed, configured, and ready. A missing
 companion is ordinary standalone operation, not an error. A ready policy-v1
 service rejects destinations it owns. An incompatible reply, or a well-formed
 reply that is not ready, blocks export and artifact publication until corrected.
-The public capability reply does not distinguish an unconfigured companion from
-a configured companion that failed to start; that unclassified reply is not
-treated as absence. Search remains usable without the service. See
+A not-ready policy-v1 reply is classified by the public `roots` error:
+`CONFIG_MISSING` is unconfigured standalone use, and any other error blocks
+export. Search remains usable without the service. See
 [datastore ownership](#saveto-and-datastore-ownership).
 
 ## Purpose and scope
@@ -22,7 +22,8 @@ treated as absence. Search remains usable without the service. See
 ownership-policy service when one answers discovery. It does not require that
 service for standalone fetches, local-file reads, or exports. Artifact placement
 is still checked against a ready service so a configured store cannot receive
-an unvalidated cache or export. Incompatible or not-ready replies block affected
+an unvalidated cache or export. Incompatible replies, and not-ready replies whose public `roots` call fails for
+any reason other than `CONFIG_MISSING`, block affected
 fetch and export work before it starts; `web_search` does not require that
 service. Policy-service availability is distinct from search-index freshness or
 semantic-search readiness.
@@ -387,18 +388,15 @@ instance as proof.
 | No reply | Standalone. No missing-integration warning. Exports and cache placement proceed under the downloads and local protections. |
 | One ready policy-v1 reply | Bind to that instance. Reject owned destinations. Recheck at publication. |
 | Malformed, duplicate, or ready-without-policy reply | Incompatible. Warn at startup. Do not start affected fetch or export work. |
-| One well-formed reply with `ready: false` | Unclassified. The public contract cannot tell unconfigured from configured-but-failed. Do not label it absence. Withhold exports and artifact publication and report the API gap. |
+| One policy-v1 reply with `ready: false` | Call public `roots`. `CONFIG_MISSING` is unconfigured standalone use, with no warning. Any other error, including `CONFIG_INVALID`, `PROJECT_UNTRUSTED`, and `STORE_UNAVAILABLE`, blocks affected fetch and export. Do not treat an arbitrary failure as absence. |
 
+Discovery for the startup warning runs at `resources_discover`, after every
+`session_start`, so a companion that has not finished starting is not mistaken
+for a missing configuration. Each operation and publication discovers again.
 A protection check that fails after a ready startup does not publish an
-unvalidated artifact or export. Discovery is synchronous. Requests bind to the
-ready instance. The existing datastore RPC lifetime is used, without a consumer
-discovery timer. Effective configuration changes at service/session replacement
-are observed by fresh discovery; this package adds no live configuration watcher.
-
-The unclassified row is an owning-component gap in pi-markdown-datastore: its
-capability reply needs a public distinction such as configuration missing versus
-a configured startup error code. This package does not read that companion's
-private configuration to invent the distinction.
+unvalidated artifact or export. Requests bind to the discovered instance.
+The existing datastore RPC lifetime is used, without a consumer discovery timer.
+This package does not read the companion's private configuration.
 
 ### Output
 
@@ -587,7 +585,7 @@ HTTP fixtures.
 | --- | --- |
 | `downloadsDir` export root, default `<project>/downloads`, created at startup | Prevents user-facing exports from landing in the project working directory. Approved by issues #8 and #5. Implemented in `src/config.ts` and `src/fetchcore.ts`. |
 | Relative and contained-absolute `saveTo` only; symlink traversal and overwrite refused; protected config directory refused | Prevents export escape and clobbering durable configuration. Approved by issue #8, retaining the earlier symlink, no-overwrite, and config-path rules. |
-| Ready policy-v1 datastore ownership checked before fetch work and again at publication; absent companion does not block; incompatible and unclassified replies block affected fetch/export | Prevents unvalidated writes into configured stores without making standalone use fail closed. Approved by issue #5, except the unclassified row, which is an unapproved datastore API gap recorded above rather than a new policy. |
+| Ready policy-v1 datastore ownership checked before fetch work and again at publication; no reply and `CONFIG_MISSING` do not block; other public policy errors block affected fetch/export | Prevents unvalidated writes into configured stores without making standalone or genuinely unconfigured use fail closed. Approved by issue #5. |
 | External response cap default 1 MiB, ceiling 64 MiB; page budget default 51,200, ceiling 256,000; redirects default 5; search results 1-10; search text 51,200 bytes; artifact retention 1 hour; template depth 3 | Existing product bounds in this document. Owner approval for retaining each numeric bound is not restated in issues #5 or #8. Flagged, not changed. |
 | Policy RPC envelope `deadline` of 15 minutes | Required field of the datastore public RPC. Enforcement belongs to that service. This package adds no timer. Approval of the value is the datastore contract, not a new web-surfer limit. |
 | Config file mode 0600 and directory mode 0700 | Existing owner-only configuration discipline. Not changed by #5 or #8. Explicit approval for the modes is not in those issues. |

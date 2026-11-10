@@ -249,11 +249,19 @@ export function registerWebSurferSession(
 		await cleanupExpired(projectHash(ctx.cwd));
 		piState.current = state;
 		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } }).ui;
-		const startup = state.config.exportError ?? state.boundary.warning;
-		if (startup) {
-			ui?.setStatus?.("web-surfer", startup);
-			ui?.notify?.(startup, "warning");
+		if (state.config.exportError) {
+			ui?.setStatus?.("web-surfer", state.config.exportError);
+			ui?.notify?.(state.config.exportError, "warning");
 		}
+	});
+	pi.on("resources_discover", async (_event, ctx) => {
+		const found = await piState.current?.boundary.inspect?.();
+		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } } | undefined)?.ui;
+		if (found?.warning) {
+			ui?.setStatus?.("web-surfer", found.warning);
+			ui?.notify?.(found.warning, "warning");
+		}
+		return {};
 	});
 	pi.on("session_shutdown", async () => {
 		piState.current?.controller.abort();

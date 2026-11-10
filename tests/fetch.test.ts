@@ -577,14 +577,12 @@ test("session boundary discovery is optional when absent and blocks incompatible
 		},
 	};
 	const withResponder = await createSessionState({ cwd: dir, events: respondingBus });
-	assert.equal(withResponder.boundary.mode, "ready");
-	assert.equal(withResponder.boundary.available, true);
+	assert.equal((await withResponder.boundary.inspect!()).mode, "ready");
 	await withResponder.boundary.validate!(path.join(dir,'new.txt'));
 
 	const silentBus: EventBusLike = { emit: () => {}, on: () => () => {} };
 	const absent = await createSessionState({ cwd: dir, events: silentBus });
-	assert.equal(absent.boundary.mode, "absent");
-	assert.equal(absent.boundary.warning, undefined);
+	assert.equal((await absent.boundary.inspect!()).mode, "absent");
 	assert.equal(absent.config.resolvedDownloadsDir, path.join(dir, "downloads"));
 	assert.equal(existsSync(path.join(dir, "downloads")), true);
 
@@ -600,21 +598,33 @@ test("session boundary discovery is optional when absent and blocks incompatible
 		},
 	};
 	const incompatible = await createSessionState({ cwd: dir, events: incompatibleBus });
-	assert.equal(incompatible.boundary.mode, "incompatible");
-	assert.match(incompatible.boundary.warning ?? "", /incompatible/);
+	const incompatibleFound = await incompatible.boundary.inspect!();
+	assert.equal(incompatibleFound.mode, "incompatible");
+	assert.match(incompatibleFound.warning ?? "", /incompatible/);
 
-	const unreadyBus: EventBusLike = {
+	const policyBus = (code: string): EventBusLike => ({
 		emit(type, data) {
-			if (type !== CAPABILITY_REQUEST) return;
-			const req = data as { requestId: string };
-			replyHandler?.({ version: 1, requestId: req.requestId, capability: { version: 1, contractVersion: 1, ready: false, stores: [], policyVersion: 1, instanceId: "gap" } });
+			if (type === CAPABILITY_REQUEST) {
+				const req = data as { requestId: string };
+				replyHandler?.({ version: 1, requestId: req.requestId, capability: { version: 1, contractVersion: 1, ready: false, stores: [], policyVersion: 1, instanceId: "not-ready" } });
+			}
+			if (type === POLICY_REQUEST) {
+				const req = data as { reject: (error: unknown) => void };
+				req.reject({ code });
+			}
 		},
 		on(type, handler) {
 			if (type === CAPABILITY_REPLY) replyHandler = handler;
 			return () => { replyHandler = undefined; };
 		},
-	};
-	const unclassified = await createSessionState({ cwd: dir, events: unreadyBus });
-	assert.equal(unclassified.boundary.mode, "unclassified");
-	assert.match(unclassified.boundary.warning ?? "", /does not distinguish/);
+	});
+	const missing = await createSessionState({ cwd: dir, events: policyBus("CONFIG_MISSING") });
+	assert.equal((await missing.boundary.inspect!()).mode, "absent");
+	assert.equal((await missing.boundary.inspect!()).warning, undefined);
+	const invalid = await createSessionState({ cwd: dir, events: policyBus("CONFIG_INVALID") });
+	const invalidFound = await invalid.boundary.inspect!();
+	assert.equal(invalidFound.mode, "incompatible");
+	assert.match(invalidFound.warning ?? "", /CONFIG_INVALID/);
+	const unavailable = await createSessionState({ cwd: dir, events: policyBus("STORE_UNAVAILABLE") });
+	assert.match((await unavailable.boundary.inspect!()).warning ?? "", /STORE_UNAVAILABLE/);
 });

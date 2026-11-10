@@ -73,19 +73,26 @@ function configInvalid(message: string | undefined): FetchResult {
 	};
 }
 
-function knownStartupFailure(env: FetchEnvironment): FetchResult | undefined {
+async function knownStartupFailure(env: FetchEnvironment): Promise<FetchResult | undefined> {
 	if (env.config.exportError) {
 		return fail("config_invalid", `${env.config.exportError} Fetch and export stay disabled until the downloads directory is corrected.`);
 	}
+	if (env.boundary.inspect) {
+		const found = await env.boundary.inspect();
+		if (found.mode === "incompatible") {
+			return fail("destination_blocked", found.warning ?? "datastore protection is not usable");
+		}
+		return undefined;
+	}
 	const mode = protectionMode(env.boundary);
-	if (mode === "incompatible" || mode === "unclassified") {
+	if (mode === "incompatible") {
 		return fail("destination_blocked", env.boundary.warning ?? env.boundary.reason ?? "datastore protection is not usable");
 	}
 	return undefined;
 }
 
 export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Promise<FetchResult> {
-	const blocked = knownStartupFailure(env);
+	const blocked = await knownStartupFailure(env);
 	if (blocked) return blocked;
 	const projectHashValue = projectHash(env.cwd);
 	const configDirName = env.configDirName ?? ".pi";
@@ -653,14 +660,14 @@ function fail(code: FetchDetails["code"], message: string,extra:Pick<FetchDetail
 	};
 }
 
-function executePaging(
+async function executePaging(
 	req: FetchRequest,
 	env: FetchEnvironment,
 	projectHashValue: string,
 	mode: "readable" | "raw",
 ): Promise<FetchResult> {
-	const blocked = knownStartupFailure(env);
-	if (blocked) return Promise.resolve(blocked);
+	const blocked = await knownStartupFailure(env);
+	if (blocked) return blocked;
 	const artifactId = req.artifactId!;
 	// The artifact id encodes its request key: <requestKey>-<timestamp><rand>.
 	const dash = artifactId.indexOf("-");
