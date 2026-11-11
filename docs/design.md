@@ -583,13 +583,21 @@ HTTP fixtures.
 
 ## Restrictions register
 
+Review in every PR against source, tests and dependency behavior. Each entry must
+identify effective values/locations, evidence, configuration ownership and explicit
+approval; missing evidence stays missing. This inventory does not approve legacy
+bounds or claim that dependency defaults are owner policy. Component maintainers
+own fixed values; project configuration owns its documented overrides.
+
 | Restriction | Why (what failure does it prevent) |
 | --- | --- |
-| `downloadsDir` export root, default `<project>/downloads`, created at startup | Prevents user-facing exports from landing in the project working directory. Approved by issues #8 and #5. Implemented in `src/config.ts` and `src/fetchcore.ts`. |
+| `downloadsDir` export root, default `<project>/downloads`, created at startup | Gives user-facing exports an explicit destination rather than interpreting save paths against cwd. The default remains inside the project; cwd is not a new OS security boundary. Approved by issues #8 and #5. Implemented in `src/config.ts` and `src/fetchcore.ts`. |
 | Relative and contained-absolute `saveTo` only; symlink traversal and overwrite refused; protected config directory refused | Prevents export escape and clobbering durable configuration. Approved by issue #8, retaining the earlier symlink, no-overwrite, and config-path rules. |
 | Ready policy-v1 datastore ownership checked before fetch work and again at publication; no reply and `CONFIG_MISSING` do not block; other public policy errors block affected fetch/export | Prevents unvalidated writes into configured stores without making standalone or genuinely unconfigured use fail closed. Approved by issue #5. |
 | External response cap default 1 MiB, ceiling 64 MiB; page budget default 51,200, ceiling 256,000; redirects default 5; search results 1-10; search text 51,200 bytes; artifact retention 1 hour; template depth 3 | Existing product bounds in this document. Owner approval for retaining each numeric bound is not restated in issues #5 or #8. Flagged, not changed. |
-| Policy RPC envelope `deadline` of 15 minutes | Required field of the datastore public RPC. Enforcement belongs to that service. This package adds no timer. Approval of the value is the datastore contract, not a new web-surfer limit. |
+| Policy RPC envelope `deadline` defaults to15 minutes via the public datastore client | The field is required by the dependency; enforcement belongs to that service and this package adds no timer. That does not establish owner approval of this chosen numeric duration or the dependency ceiling. Their approval evidence remains missing, not inferred from the contract. |
 | Config file mode 0600 and directory mode 0700 | Existing owner-only configuration discipline. Not changed by #5 or #8. Explicit approval for the modes is not in those issues. |
+| Package test outer60000ms/subprocess30000ms; retained integration outer90000ms/install45000ms/probe30000ms. Locations: package and integration tests. | Existing functional-run budgets can fail slow work. Fixture maintainers own them; explicit approval is not established by fixture placement or green tests. |
+| README publication registry rules and existing-branch main-history exclusion; scanner capture256MiB. Locations: `.githooks/`, scanner script. | Main exclusion approved in PR#9's guard correction; feature checks remain intact. Capture-limit necessity/approval is not established; registry paths remain configurable. |
 
 No new timeout, retry, concurrency limit, or fallback export location is added by this contract.
