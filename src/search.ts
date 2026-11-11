@@ -65,11 +65,11 @@ export class GeminiAdapter implements SearchAdapter {
 		this.opts = opts;
 	}
 	get apiKey(): string | undefined {
-		return this.opts.apiKey ?? process.env.GEMINI_API_KEY;
+		return this.opts.apiKey ?? process.env.GEMINI_SEARCH_API_KEY;
 	}
 	async search(query: string, opts: SearchOpts): Promise<SearchBackendResult> {
 		const key = this.apiKey;
-		if (!key) return failure(this.backend, "GEMINI_API_KEY is not available", "key_unavailable");
+		if (!key) return failure(this.backend, "GEMINI_SEARCH_API_KEY is not available", "key_unavailable");
 		const fetchImpl = this.opts.fetchImpl ?? fetch;
 		try {
 			opts.signal?.throwIfAborted();

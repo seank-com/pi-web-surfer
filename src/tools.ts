@@ -1,6 +1,6 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadConfig, type ConfigLoadResult } from "./config.ts";
+import { initializeDownloads, type ConfigLoadResult } from "./config.ts";
 import { KeyLock, cleanupExpired } from "./artifacts.ts";
 import { projectHash } from "./identity.ts";
 import { executeFetch, type FetchEnvironment } from "./fetchcore.ts";
@@ -71,7 +71,7 @@ const FetchSchema = Type.Object({
 	),
 	saveTo: Type.Optional(
 		Type.String({
-			description: "New project-relative destination, resolved from project cwd, never overwrites. On an initial fetch/conversion saves original bytes; with a converted artifactId saves converted text.",
+			description: "New destination under the configured downloads directory. Relative paths and contained absolute paths are both accepted. Never overwrites. On an initial fetch/conversion saves original bytes; with a converted artifactId saves converted text.",
 		}),
 	),
 });
@@ -104,8 +104,8 @@ export interface WebSurferHost {
 }
 
 export async function createSessionState(host: WebSurferHost): Promise<SessionState> {
-	const config = loadConfig(host.cwd, host.configDirName ?? ".pi");
-	const boundary = await discoverDatastoreBoundary(host.events, host.cwd, host.configDirName ?? ".pi");
+	const config = initializeDownloads(host.cwd, host.configDirName ?? ".pi");
+	const boundary = discoverDatastoreBoundary(host.events, host.cwd, host.configDirName ?? ".pi");
 	return {
 		config,
 		boundary,
@@ -142,7 +142,7 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 			"- Body/templates splice complete artifacts directly: {{artifact:ID}} is literal text; {{artifact:ID,json}} is an entire JSON string value, already quoted/escaped (including control characters). Correct: {\"content\":{{artifact:ID,json}}}. Incorrect: {\"content\":\"{{artifact:ID,json}}\"} or a trailing quote after the splice. No saveTo/read/copy-back step is needed.",
 			"- Paging/reuse: pass the returned `artifactId` plus `offset`/`nextOffset`; `refresh` forces a new fetch. IDs expire one hour after creation, without read renewal; save converted text for durable reuse, or deliberately reacquire an unavailable source.",
 			"- Save converted PDF/DOCX text in two calls: first {\"path\":\"report.pdf\",\"view\":\"artifact\"}; then {\"artifactId\":\"RETURNED_CONVERTED_ID\",\"view\":\"artifact\",\"saveTo\":\"sources/report.md\"}. Use report.docx the same way. No document text enters model context.",
-			"- `saveTo` is project-relative to project cwd and never overwrites. On the original fetch/conversion it saves original PDF/DOCX bytes, regardless of destination suffix; pin the converted artifact to save text. Successful metadata-only saves state path, byte kind and byte count.",
+			"- `saveTo` is relative to the configured downloads directory, or an absolute path inside that directory. It never overwrites. On the original fetch/conversion it saves original PDF/DOCX bytes, regardless of destination suffix; pin the converted artifact to save text. Successful metadata-only saves state path, byte kind and byte count.",
 			"- POST/PUT with `body` and `headers` for request injection. Templates: `{{env:NAME}}`, `{{file:path}}`, `{{template:path,{\"var\":\"value\"}}}`.",
 			"- Non-2xx responses keep their body with the status disclosed as a warning.",
 			"- Binary responses are stored artifacts, not inline text.",
@@ -187,7 +187,7 @@ export function registerWebSurferTools(pi: ExtensionAPI, getState: (ctx: Extensi
 		label: "Web Search",
 		promptSnippet: "Search the web via Google grounding (primary) or DuckDuckGo (fallback).",
 		description: [
-			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_API_KEY). DuckDuckGo HTML is selected automatically only without a key; Gemini errors never trigger a backend switch.",
+			"Search the web. Primary backend: Google Gemini Google Search grounding (requires GEMINI_SEARCH_API_KEY). DuckDuckGo HTML is selected automatically only without a key; Gemini errors never trigger a backend switch.",
 			"",
 			"- `query` (required). `maxResults` 1-10 (default from project config, 10).",
 			"- Results preserve provider order and content; sources may be absent (ungrounded answers are labeled).",
@@ -248,6 +248,26 @@ export function registerWebSurferSession(
 		const state = await createSessionState(host);
 		await cleanupExpired(projectHash(ctx.cwd));
 		piState.current = state;
+		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } }).ui;
+		if (state.config.exportError) {
+			ui?.setStatus?.("web-surfer", state.config.exportError);
+			ui?.notify?.(state.config.exportError, "warning");
+		}
+	});
+	pi.on("resources_discover", async (_event, ctx) => {
+		const state = piState.current;
+		if (!state || state.controller.signal.aborted) return {};
+		let found: { warning?: string } | undefined;
+		try {
+			found = await state.boundary.inspect?.(state.controller.signal);
+		} catch {
+			return {};
+		}
+		if (piState.current !== state || state.controller.signal.aborted || !found?.warning) return {};
+		const ui = (ctx as { ui?: { setStatus?: (key: string, value?: string) => void; notify?: (message: string, type?: string) => void } } | undefined)?.ui;
+		ui?.setStatus?.("web-surfer", found.warning);
+		ui?.notify?.(found.warning, "warning");
+		return {};
 	});
 	pi.on("session_shutdown", async () => {
 		piState.current?.controller.abort();

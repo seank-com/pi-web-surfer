@@ -106,8 +106,11 @@ configured; caller/session cancellation remains available.
 ## Search setup and egress
 
 The intended primary is Gemini with Google Search grounding. The operator
-supplies an existing `GEMINI_API_KEY` through the environment or the established
-protected environment-file source. Do not put keys in config, tool arguments,
+supplies an existing `GEMINI_SEARCH_API_KEY` in Pi's inherited environment, loading
+the established protected environment source before startup if needed. The extension
+reads the process export, not a credential in `.pi/web-surfer/config.json`.
+GEMINI_API_KEY is reserved for Pi's model-provider discovery and is not a search
+fallback. Do not put keys in config, tool arguments,
 committed files, screenshots, or errors. Installation does not inspect or copy
 live credentials, create new ones, or enable a paid account.
 
@@ -153,18 +156,21 @@ response. HTTP 401/403/404 and other non-2xx bodies remain visible with their
 status, not hidden as extraction success.
 
 `saveTo` on an initial fetch/conversion writes its original source bytes to a new
-project-relative file; on a pinned artifact it writes that artifact's bytes. It
-never overwrites an existing file, and it refuses the protected configuration
-directory, destinations outside the project, and configured datastore roots
-(the content is still served; the refusal is a `destination_blocked`
-warning). It does not author a datastore note or trigger indexing. The
-datastore-root boundary is checked through the active datastore policy-v1 API.
-Cache placement requires the same service, even when its authoritative root set
-is empty. Missing/unready/incompatible responders block publication rather than
-inventing empty ownership. Load the datastore extension once with a valid protected
-configuration, then start/reload the disposable session. Both extension load
-orders are supported; no guessed config-file boundary or copied datastore
-containment code is used.
+file under the configured `downloadsDir`; on a pinned artifact it writes that
+artifact's bytes. Relative paths and absolute paths inside that directory are
+both accepted. It never overwrites an existing file, and it refuses the protected
+configuration directory, destinations outside the downloads directory, symlink
+traversal, and destinations owned by a ready datastore (the content is still
+served when the refusal is only a destination check; a known protection or
+downloads failure is returned before the fetch). It does not author a datastore
+note or trigger indexing. The datastore-root boundary is checked through the
+public policy-v1 API when a ready companion answers. No reply means standalone
+operation. A not-ready policy reply whose public `roots` call returns
+`CONFIG_MISSING` is also standalone. Any other policy error blocks affected
+fetch and export and is not described as a missing companion. Load the datastore extension once
+with a valid protected configuration when integration is wanted, then start the
+disposable session. Both extension load orders are supported; no guessed
+config-file boundary or copied datastore containment code is used.
 
 Temporary artifacts are private files with one-hour retention, not a durable
 archive or a credential-safe place for arbitrary secrets.
