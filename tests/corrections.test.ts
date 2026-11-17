@@ -227,7 +227,7 @@ test("cache preflight and publication both check ownership without creating read
 test("save rechecks policy immediately before the exclusive write and preserves its artifact", async (t) => {
 	const f = await fixture(t);
 	let checks = 0;
-	const dest = join(f.cwd, "out.txt");
+	const dest = join(f.cwd, "downloads", "out.txt");
 	const boundary = {
 		available: true,
 		roots: [],
@@ -295,7 +295,7 @@ test("internal local-file reads are uncapped while pages remain bounded", async 
 	assert.equal(result.details.ok, true);
 	assert.equal(result.details.sizeBytes, Buffer.byteLength(large));
 	assert.equal(result.details.returnedBytes, DEFAULT_CONFIG.fetch.chunkBytes);
-	assert.equal(await readFile(join(f.cwd, "copy.txt"), "utf8"), large);
+	assert.equal(await readFile(join(f.cwd, "downloads", "copy.txt"), "utf8"), large);
 	assert.equal(f.count(), 0);
 });
 test("unterminated placeholders preserve literal prefixes exactly once", () => {

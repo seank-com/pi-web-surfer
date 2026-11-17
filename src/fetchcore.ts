@@ -3,7 +3,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { lstat, mkdir, open, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { ConfigLoadResult, FetchConfig } from "./config.ts";
-import { BODY_BYTES_CEILING, CHUNK_BYTES_CEILING, DEFAULT_CONFIG } from "./config.ts";
+import { BODY_BYTES_CEILING, CHUNK_BYTES_CEILING, DEFAULT_CONFIG, defaultDownloadsDir, resolveConfiguredPath } from "./config.ts";
 import {
 	CancelledError,
 	KeyLock,
@@ -23,7 +23,7 @@ import { represent, isHtmlContent } from "./extract.ts";
 import { ConversionError } from './conversion.ts';
 import { artifactFilename, artifactText, deriveArtifact } from './derived.ts';
 import { pathRequestIdentity, projectHash, urlRequestIdentity } from "./identity.ts";
-import { BoundaryError, checkDestination, validateBoundary, type DatastoreBoundary } from "./policy.ts";
+import { BoundaryError, checkDestination, protectionMode, validateBoundary, type DatastoreBoundary } from "./policy.ts";
 import { httpFetch, validateOrigin, TransportError } from "./transport.ts";
 import { resolveTopLevelTemplateAsync, isTemplateError } from "./templates.ts";
 import type { FetchDetails, ToolOutput, Warning } from "./types.ts";
@@ -73,7 +73,33 @@ function configInvalid(message: string | undefined): FetchResult {
 	};
 }
 
+async function knownStartupFailure(env: FetchEnvironment): Promise<FetchResult | undefined> {
+	if (env.config.exportError) {
+		return fail("config_invalid", `${env.config.exportError} Fetch and export stay disabled until the downloads directory is corrected.`);
+	}
+	if (env.boundary.inspect) {
+		try {
+			const found = await env.boundary.inspect(env.signal);
+			if (env.signal?.aborted) return fail("cancelled", "operation cancelled before fetch");
+			if (found.mode === "incompatible") {
+				return fail("destination_blocked", found.warning ?? "datastore protection is not usable");
+			}
+		} catch (error) {
+			if (env.signal?.aborted) return fail("cancelled", "operation cancelled before fetch");
+			throw error;
+		}
+		return undefined;
+	}
+	const mode = protectionMode(env.boundary);
+	if (mode === "incompatible") {
+		return fail("destination_blocked", env.boundary.warning ?? env.boundary.reason ?? "datastore protection is not usable");
+	}
+	return undefined;
+}
+
 export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Promise<FetchResult> {
+	const blocked = await knownStartupFailure(env);
+	if (blocked) return blocked;
 	const projectHashValue = projectHash(env.cwd);
 	const configDirName = env.configDirName ?? ".pi";
 	const configDir = path.join(env.cwd, configDirName);
@@ -163,7 +189,7 @@ export async function executeFetch(req: FetchRequest, env: FetchEnvironment): Pr
 	const keyLockKey = `${projectHashValue}/${identity.key}`;
 	try {
 		return await env.lock.run(keyLockKey, env.signal, async () => {
-			try{await validateBoundary(env.boundary,requestDir(projectHashValue,identity.key),env.signal);}catch{if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked','Cache placement cannot be verified outside datastore roots');}
+			try{await validateBoundary(env.boundary,requestDir(projectHashValue,identity.key),env.signal);}catch(error){if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked',error instanceof BoundaryError?error.message:'Cache placement cannot be verified outside datastore roots');}
 			// Storage identity is not permission to reuse an injected request.
 			if (!req.refresh && (hasPath || (method==='GET'&&req.body===undefined&&!Object.keys(req.headers??{}).length))) {
 				const latestId = await readLatest(projectHashValue, identity.key);
@@ -319,7 +345,7 @@ async function serveFromArtifact(
 		if(env.config.invalid)return configInvalid(env.config.invalid);
 		try{await validateOrigin(meta.sourceUrl!,env.config.config!.fetch.privateNetworks,env.lookupImpl);if(meta.finalUrl&&meta.finalUrl!==meta.sourceUrl)await validateOrigin(meta.finalUrl,env.config.config!.fetch.privateNetworks,env.lookupImpl);}catch(error){if(error instanceof TransportError)return fail(error.code,error.message);throw error;}
 	}
-	try{await validateBoundary(env.boundary,requestDir(projectHashValue,meta.requestKey),env.signal);}catch{if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked','Cache ownership policy unavailable or destination owned');}
+	try{await validateBoundary(env.boundary,requestDir(projectHashValue,meta.requestKey),env.signal);}catch(error){if(env.signal?.aborted)throw new CancelledError();return fail('destination_blocked',error instanceof BoundaryError?error.message:'Cache ownership policy unavailable or destination owned');}
 	const sourceBytes = await readSourceBytes(projectHashValue, meta.requestKey, meta.artifactId);
 	env.signal?.throwIfAborted();
 	if (sourceBytes === undefined) {
@@ -525,6 +551,12 @@ function isContinuationByte(text: Buffer, offset: number): boolean {
 // saveTo
 // ---------------------------------------------------------------------------
 
+function effectiveDownloadsRoot(env: FetchEnvironment): string {
+	if (env.config.resolvedDownloadsDir) return env.config.resolvedDownloadsDir;
+	const spelling = env.config.config?.downloadsDir;
+	return resolveConfiguredPath(spelling && spelling.length > 0 ? spelling : defaultDownloadsDir(env.cwd), env.cwd);
+}
+
 async function performSaveTo(
 	relative: string | undefined,
 	meta: ArtifactMeta,
@@ -532,26 +564,25 @@ async function performSaveTo(
 	env: FetchEnvironment,
 	configDir: string,
 ): Promise<{ savedPath?: string; error?: string; code?: "destination_blocked" | "save_failed" }> {
-	return performSaveToImpl(relative, env.cwd, configDir, env.boundary, sourceBytes,env.signal);
+	return performSaveToImpl(relative, effectiveDownloadsRoot(env), configDir, env.boundary, sourceBytes,env.signal);
 }
 
 async function performSaveToImpl(
-	relative: string | undefined,
-	cwd: string,
+	saveTo: string | undefined,
+	downloadsRoot: string,
 	configDir: string,
 	boundary: DatastoreBoundary,
 	sourceBytes: Buffer,
 	signal?:AbortSignal,
 ): Promise<{ savedPath?: string; error?: string; code?: "destination_blocked" | "save_failed" }> {
-	if (!relative) return {};
-	if (path.isAbsolute(relative) || relative.startsWith("/")) {
-		return { error: "saveTo must be a project-relative path", code: "destination_blocked" };
-	}
-	const absolute = path.resolve(cwd, relative);
+	if (!saveTo) return {};
+	const absolute = path.isAbsolute(saveTo) ? path.resolve(saveTo) : path.resolve(downloadsRoot, saveTo);
+	const escaped = symlinkEscape(downloadsRoot, absolute);
+	if (escaped) return { error: escaped, code: "destination_blocked" };
 
 	const precheck = checkDestination({
 		absolute,
-		projectRoot: cwd,
+		downloadsRoot,
 		configDir,
 		boundary,
 		exists: pathExistsSync(absolute),
@@ -586,7 +617,28 @@ async function performSaveToImpl(
 		return { error: 'Save failed; cached artifact preserved', code: "save_failed" };
 	}
 
-	return { savedPath: relative };
+	return { savedPath: saveTo };
+}
+
+function symlinkEscape(root: string, absolute: string): string | undefined {
+	const rel = path.relative(root, absolute);
+	if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return "destination is outside the downloads directory";
+	let current = root;
+	try {
+		if (lstatSync(root).isSymbolicLink()) return "downloads directory must not be a symlink";
+		if (!lstatSync(root).isDirectory()) return `downloads path is not a directory: ${root}`;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return `downloads directory is not accessible: ${root}`;
+	}
+	for (const part of rel.split(path.sep).filter(Boolean)) {
+		current = path.join(current, part);
+		try {
+			if (lstatSync(current).isSymbolicLink()) return "destination must not traverse a symlink";
+		} catch {
+			return undefined;
+		}
+	}
+	return undefined;
 }
 
 function pathExistsSync(p: string): boolean {
@@ -614,12 +666,14 @@ function fail(code: FetchDetails["code"], message: string,extra:Pick<FetchDetail
 	};
 }
 
-function executePaging(
+async function executePaging(
 	req: FetchRequest,
 	env: FetchEnvironment,
 	projectHashValue: string,
 	mode: "readable" | "raw",
 ): Promise<FetchResult> {
+	const blocked = await knownStartupFailure(env);
+	if (blocked) return blocked;
 	const artifactId = req.artifactId!;
 	// The artifact id encodes its request key: <requestKey>-<timestamp><rand>.
 	const dash = artifactId.indexOf("-");

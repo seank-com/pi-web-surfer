@@ -31,6 +31,8 @@ try {
 		await mkdir(profile);
 		process.env.PI_CODING_AGENT_DIR = profile;
 		await mkdir(join(cwd, "notes"));
+		await mkdir(join(cwd, ".pi", "web-surfer"), { recursive: true, mode: 0o700 });
+		await writeFile(join(cwd, ".pi", "web-surfer", "config.json"), JSON.stringify({ schemaVersion: 1, downloadsDir: cwd }), { mode: 0o600 });
 		await writeFile(join(cwd, "input.txt"), "Native fixture source bytes");
 		const configDir = join(cwd, ".pi/markdown-datastore");
 		await mkdir(configDir, { recursive: true, mode: 0o700 });
